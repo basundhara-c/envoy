@@ -239,20 +239,24 @@ protected:
   NiceMock<Event::MockDispatcher> dispatcher_{"test_dispatcher"};
   
   // Mock socket for testing
-  std::unique_ptr<NiceMock<Network::MockConnectionSocket>> mock_socket_;
+  std::unique_ptr<Network::ConnectionSocket> mock_socket_;
   std::unique_ptr<NiceMock<Network::MockIoHandle>> mock_io_handle_;
   
   // Helper method to set up socket mock
   void setupSocketMock() {
-    mock_socket_ = std::make_unique<NiceMock<Network::MockConnectionSocket>>();
+    // Create a mock socket that inherits from ConnectionSocket
+    auto mock_socket_ptr = std::make_unique<NiceMock<Network::MockConnectionSocket>>();
     mock_io_handle_ = std::make_unique<NiceMock<Network::MockIoHandle>>();
     
     EXPECT_CALL(*mock_io_handle_, fdDoNotUse()).WillRepeatedly(Return(123));
-    EXPECT_CALL(*mock_socket_, ioHandle()).WillRepeatedly(ReturnRef(*mock_io_handle_));
-    mock_socket_->io_handle_ = std::move(mock_io_handle_);
+    EXPECT_CALL(*mock_socket_ptr, ioHandle()).WillRepeatedly(ReturnRef(*mock_io_handle_));
+    mock_socket_ptr->io_handle_ = std::move(mock_io_handle_);
     
-    // Set up connection to return the mock socket
-    EXPECT_CALL(connection_, getSocket()).WillRepeatedly(ReturnRef(*mock_socket_));
+    // Cast the mock to the base ConnectionSocket type
+    mock_socket_ = std::unique_ptr<Network::ConnectionSocket>(mock_socket_ptr.release());
+    
+    // Set up connection to return the socket - return reference to the unique_ptr
+    EXPECT_CALL(connection_, getSocket()).WillRepeatedly(ReturnRef(mock_socket_));
   }
   
   // Thread local components for testing upstream socket manager
@@ -424,6 +428,9 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionValidProtobuf) {
   auto headers = createHeaders("POST", "/reverse_connections/request");
   headers.setContentLength(std::to_string(handshake_arg.length()));
   
+  // Set up socket mock
+  setupSocketMock();
+  
   // Process headers first
   Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
   EXPECT_EQ(header_status, Http::FilterHeadersStatus::StopIteration);
@@ -455,11 +462,17 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionValidProtobuf) {
 
 // Test acceptReverseConnection with invalid protobuf data
 TEST_F(ReverseConnFilterTest, AcceptReverseConnectionInvalidProtobuf) {
+  // Set up thread local slot for upstream socket manager
+  setupThreadLocalSlot();
+  
   auto filter = createFilter();
   
   // Set up headers for reverse connection request
   auto headers = createHeaders("POST", "/reverse_connections/request");
   headers.setContentLength("50");
+  
+  // Set up socket mock
+  setupSocketMock();
   
   // Process headers first
   Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
@@ -482,6 +495,9 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionInvalidProtobuf) {
 
 // Test acceptReverseConnection with empty node_uuid in protobuf
 TEST_F(ReverseConnFilterTest, AcceptReverseConnectionEmptyNodeUuid) {
+  // Set up thread local slot for upstream socket manager
+  setupThreadLocalSlot();
+  
   auto filter = createFilter();
   
   // Create protobuf with empty node_uuid
@@ -494,6 +510,9 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionEmptyNodeUuid) {
   // Set up headers for reverse connection request
   auto headers = createHeaders("POST", "/reverse_connections/request");
   headers.setContentLength(std::to_string(handshake_arg.length()));
+  
+  // Set up socket mock
+  setupSocketMock();
   
   // Process headers first
   Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
@@ -643,6 +662,9 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionCrossWorkerStats) {
   auto headers = createHeaders("POST", "/reverse_connections/request");
   headers.setContentLength(std::to_string(handshake_arg.length()));
   
+  // Set up socket mock
+  setupSocketMock();
+  
   // Process headers first
   Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
   EXPECT_EQ(header_status, Http::FilterHeadersStatus::StopIteration);
@@ -683,6 +705,9 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleNodesCrossWorkerSta
   auto headers1 = createHeaders("POST", "/reverse_connections/request");
   headers1.setContentLength(std::to_string(handshake_arg1.length()));
   
+  // Set up socket mock for first connection
+  setupSocketMock();
+  
   Http::FilterHeadersStatus header_status1 = filter1->decodeHeaders(headers1, false);
   EXPECT_EQ(header_status1, Http::FilterHeadersStatus::StopIteration);
   
@@ -695,6 +720,9 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleNodesCrossWorkerSta
   std::string handshake_arg2 = createHandshakeArg("tenant-456", "cluster-789", "node-123");
   auto headers2 = createHeaders("POST", "/reverse_connections/request");
   headers2.setContentLength(std::to_string(handshake_arg2.length()));
+  
+  // Set up socket mock for second connection
+  setupSocketMock();
   
   Http::FilterHeadersStatus header_status2 = filter2->decodeHeaders(headers2, false);
   EXPECT_EQ(header_status2, Http::FilterHeadersStatus::StopIteration);
