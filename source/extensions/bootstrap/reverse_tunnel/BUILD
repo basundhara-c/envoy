@@ -48,12 +48,9 @@ envoy_cc_extension(
 envoy_cc_extension(
     name = "reverse_tunnel_initiator_lib",
     srcs = [
-        "grpc_reverse_tunnel_client.cc",
         "reverse_tunnel_initiator.cc",
     ],
     hdrs = [
-        "factory_base.h",
-        "grpc_reverse_tunnel_client.h",
         "reverse_tunnel_initiator.h",
     ],
     visibility = ["//visibility:public"],
@@ -83,8 +80,7 @@ envoy_cc_extension(
         "//source/common/upstream:load_balancer_context_base_lib",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
         "@envoy_api//envoy/extensions/bootstrap/reverse_connection_socket_interface/v3:pkg_cc_proto",
-        "@envoy_api//envoy/extensions/filters/http/reverse_conn/v3:pkg_cc_proto",
-        "@envoy_api//envoy/service/reverse_tunnel/v3:pkg_cc_proto",
+        "@envoy_api//envoy/extensions/bootstrap/reverse_connection_handshake/v3:pkg_cc_proto",
     ],
     alwayslink = 1,
 )
