@@ -49,25 +49,11 @@ std::string ReverseConnFilter::getQueryParam(const std::string& key) {
   }
 }
 
-void ReverseConnFilter::getClusterDetailsUsingQueryParams(std::string* node_uuid,
-                                                          std::string* cluster_uuid,
-                                                          std::string* tenant_uuid) {
-  if (node_uuid) {
-    *node_uuid = getQueryParam(node_id_param);
-  }
-  if (cluster_uuid) {
-    *cluster_uuid = getQueryParam(cluster_id_param);
-  }
-  if (tenant_uuid) {
-    *tenant_uuid = getQueryParam(tenant_id_param);
-  }
-}
-
 void ReverseConnFilter::getClusterDetailsUsingProtobuf(std::string* node_uuid,
                                                        std::string* cluster_uuid,
                                                        std::string* tenant_uuid) {
 
-  envoy::extensions::filters::http::reverse_conn::v3::ReverseConnHandshakeArg arg;
+  envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeArg arg;
   const std::string request_body = accept_rev_conn_proto_.toString();
   ENVOY_STREAM_LOG(debug, "Received protobuf request body length: {}", *decoder_callbacks_,
                    request_body.length());
@@ -95,11 +81,11 @@ Http::FilterDataStatus ReverseConnFilter::acceptReverseConnection() {
   std::string node_uuid, cluster_uuid, tenant_uuid;
 
   decoder_callbacks_->setReverseConnForceLocalReply(true);
-  envoy::extensions::filters::http::reverse_conn::v3::ReverseConnHandshakeRet ret;
+  envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet ret;
   getClusterDetailsUsingProtobuf(&node_uuid, &cluster_uuid, &tenant_uuid);
   if (node_uuid.empty()) {
     ret.set_status(
-        envoy::extensions::filters::http::reverse_conn::v3::ReverseConnHandshakeRet::REJECTED);
+        envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet::REJECTED);
     ret.set_status_message("Failed to parse request message or required fields missing");
     decoder_callbacks_->sendLocalReply(Http::Code::BadGateway, ret.SerializeAsString(), nullptr,
                                        absl::nullopt, "");
@@ -132,7 +118,7 @@ Http::FilterDataStatus ReverseConnFilter::acceptReverseConnection() {
 
   ENVOY_STREAM_LOG(info, "Accepting reverse connection", *decoder_callbacks_);
   ret.set_status(
-      envoy::extensions::filters::http::reverse_conn::v3::ReverseConnHandshakeRet::ACCEPTED);
+      envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet::ACCEPTED);
   ENVOY_STREAM_LOG(info, "return value", *decoder_callbacks_);
 
   // Create response with explicit Content-Length
@@ -203,9 +189,9 @@ ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
             "ReverseConnFilter: Received reverse connection info request with remote_node: {} remote_cluster: {}",
             remote_node, remote_cluster);
 
-  // Production-ready cross-thread aggregation for multi-tenant reporting
+  // Production-ready cross-thread aggregation
   auto* upstream_extension = getUpstreamSocketInterfaceExtension();
-  if (!upstream_extension) {
+  if (upstream_extension == nullptr) {
     ENVOY_LOG(error, "No upstream extension available for stats collection");
     std::string response = R"({"accepted":[],"connected":[]})";
     decoder_callbacks_->sendLocalReply(Http::Code::OK, response, nullptr, absl::nullopt, "");
@@ -220,15 +206,21 @@ ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
     
     if (!remote_node.empty()) {
       std::string node_stat_name = fmt::format("reverse_connections.nodes.{}", remote_node);
-      auto it = stats_map.find(node_stat_name);
-      if (it != stats_map.end()) {
-        num_connections = it->second;
+      // Search for the stat with scope prefix since getCrossWorkerStatMap returns full stat names
+      for (const auto& [stat_name, value] : stats_map) {
+        if (stat_name.find(node_stat_name) != std::string::npos) {
+          num_connections = value;
+          break;
+        }
       }
     } else {
       std::string cluster_stat_name = fmt::format("reverse_connections.clusters.{}", remote_cluster);
-      auto it = stats_map.find(cluster_stat_name);
-      if (it != stats_map.end()) {
-        num_connections = it->second;
+      // Search for the stat with scope prefix since getCrossWorkerStatMap returns full stat names
+      for (const auto& [stat_name, value] : stats_map) {
+        if (stat_name.find(cluster_stat_name) != std::string::npos) {
+          num_connections = value;
+          break;
+        }
       }
     }
     
@@ -242,7 +234,6 @@ ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
   ENVOY_LOG(debug,
             "ReverseConnFilter: Using upstream socket manager to get connection stats");
 
-  // Use the production stats-based approach with Envoy's proven stats system
   auto [connected_nodes, accepted_connections] =
       upstream_extension->getConnectionStatsSync(std::chrono::milliseconds(1000));
 
@@ -255,7 +246,7 @@ ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
             "Stats aggregation completed: {} connected nodes, {} accepted connections",
             connected_nodes.size(), accepted_connections.size());
 
-  // Create production-ready JSON response for multi-tenant environment
+  // Create JSON response
   std::string response = fmt::format("{{\"accepted\":{},\"connected\":{}}}",
                                      Json::Factory::listAsJsonString(accepted_connections_list),
                                      Json::Factory::listAsJsonString(connected_nodes_list));
@@ -272,7 +263,7 @@ ReverseConnFilter::handleInitiatorInfo(const std::string& remote_node,
 
   // Check if downstream socket interface is available
   auto* downstream_interface = getDownstreamSocketInterface();
-  if (!downstream_interface) {
+  if (downstream_interface == nullptr) {
     ENVOY_LOG(error, "Failed to get downstream socket interface for initiator role");
     decoder_callbacks_->sendLocalReply(Http::Code::InternalServerError,
                                        "Failed to get downstream socket interface", nullptr,
@@ -282,10 +273,9 @@ ReverseConnFilter::handleInitiatorInfo(const std::string& remote_node,
 
   // Get the downstream socket interface extension to check established connections
   auto* downstream_extension = getDownstreamSocketInterfaceExtension();
-  if (!downstream_extension) {
+  if (downstream_extension == nullptr) {
     ENVOY_LOG(error, "Failed to get downstream socket interface extension for initiator role");
     std::string response = R"({"accepted":[],"connected":[]})";
-    ENVOY_LOG(info, "handleInitiatorInfo response (no extension): {}", response);
     decoder_callbacks_->sendLocalReply(Http::Code::OK, response, nullptr, absl::nullopt, "");
     return Http::FilterHeadersStatus::StopIteration;
   }
@@ -298,16 +288,22 @@ ReverseConnFilter::handleInitiatorInfo(const std::string& remote_node,
     size_t num_connections = 0;
     
     if (!remote_node.empty()) {
-      std::string node_stat_name = fmt::format("reverse_connections.nodes.{}.connected", remote_node);
-      auto it = stats_map.find(node_stat_name);
-      if (it != stats_map.end()) {
-        num_connections = it->second;
+      std::string node_stat_name = fmt::format("reverse_connections.host.{}.connected", remote_node);
+      // Search for the stat with scope prefix since getCrossWorkerStatMap returns full stat names
+      for (const auto& [stat_name, value] : stats_map) {
+        if (stat_name.find(node_stat_name) != std::string::npos) {
+          num_connections = value;
+          break;
+        }
       }
     } else {
-      std::string cluster_stat_name = fmt::format("reverse_connections.clusters.{}.connected", remote_cluster);
-      auto it = stats_map.find(cluster_stat_name);
-      if (it != stats_map.end()) {
-        num_connections = it->second;
+      std::string cluster_stat_name = fmt::format("reverse_connections.cluster.{}.connected", remote_cluster);
+      // Search for the stat with scope prefix since getCrossWorkerStatMap returns full stat names
+      for (const auto& [stat_name, value] : stats_map) {
+        if (stat_name.find(cluster_stat_name) != std::string::npos) {
+          num_connections = value;
+          break;
+        }
       }
     }
     

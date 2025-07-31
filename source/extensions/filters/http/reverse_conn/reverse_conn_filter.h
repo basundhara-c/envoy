@@ -2,6 +2,8 @@
 
 #include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.h"
 #include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.validate.h"
+#include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.h"
+#include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.validate.h"
 #include "envoy/http/async_client.h"
 #include "envoy/http/filter.h"
 #include "envoy/upstream/cluster_manager.h"
@@ -134,13 +136,6 @@ private:
   void getClusterDetailsUsingProtobuf(std::string* node_uuid, std::string* cluster_uuid,
                                       std::string* tenant_uuid);
 
-  // Gets the details of the remote cluster such as the node UUID, cluster UUID,
-  // and tenant UUID from the query parameters of the URL and populate them in
-  // the corresponding out parameters. This is used when the
-  // remote is not upgraded and using the old way to send this information.
-  // TODO- This is tech-debt and should eventually be removed.
-  void getClusterDetailsUsingQueryParams(std::string* node_uuid, std::string* cluster_uuid,
-                                         std::string* tenant_uuid);
 
   bool matchRequestPath(const absl::string_view& request_path, const std::string& api_path);
 

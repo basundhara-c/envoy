@@ -1,6 +1,6 @@
 #include "source/extensions/filters/http/reverse_conn/reverse_conn_filter.h"
 
-#include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.h"
+#include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.h"
 #include "envoy/extensions/bootstrap/reverse_connection_socket_interface/v3/upstream_reverse_connection_socket_interface.pb.h"
 
 #include "envoy/network/connection.h"
@@ -24,6 +24,7 @@
 #include "test/mocks/network/mocks.h"
 #include "test/mocks/event/mocks.h"
 #include "test/test_common/test_runtime.h"
+#include "test/test_common/logging.h"
 
 // Include reverse connection components for testing
 #include "source/extensions/bootstrap/reverse_tunnel/reverse_tunnel_acceptor.h"
@@ -63,6 +64,55 @@ protected:
     EXPECT_CALL(callbacks_, streamInfo()).WillRepeatedly(ReturnRef(stream_info_));
     EXPECT_CALL(stream_info_, dynamicMetadata()).WillRepeatedly(ReturnRef(metadata_));
 
+    // Create the configs
+    upstream_config_.set_stat_prefix("test_prefix");
+    downstream_config_.set_stat_prefix("test_prefix");
+  }
+
+  // Helper method to set up upstream extension only
+  void setupUpstreamExtension() {
+    // Create the upstream socket interface and extension
+    upstream_socket_interface_ = std::make_unique<ReverseConnection::ReverseTunnelAcceptor>(context_);
+    upstream_extension_ = std::make_unique<ReverseConnection::ReverseTunnelAcceptorExtension>(
+        *upstream_socket_interface_, context_, upstream_config_);
+
+    // Set up the extension in the global socket interface registry
+    auto* registered_upstream_interface = Network::socketInterface(
+        "envoy.bootstrap.reverse_connection.upstream_reverse_connection_socket_interface");
+    if (registered_upstream_interface) {
+      auto* registered_acceptor = dynamic_cast<ReverseConnection::ReverseTunnelAcceptor*>(
+          const_cast<Network::SocketInterface*>(registered_upstream_interface));
+      if (registered_acceptor) {
+        // Set up the extension for the registered upstream socket interface
+        registered_acceptor->extension_ = upstream_extension_.get();
+      }
+    }
+  }
+
+  // Helper method to set up downstream extension only
+  void setupDownstreamExtension() {
+    // Create the downstream socket interface and extension
+    downstream_socket_interface_ = std::make_unique<ReverseConnection::ReverseTunnelInitiator>(context_);
+    downstream_extension_ = std::make_unique<ReverseConnection::ReverseTunnelInitiatorExtension>(
+        context_, downstream_config_);
+
+    // Set up the extension in the global socket interface registry
+    auto* registered_downstream_interface = Network::socketInterface(
+        "envoy.bootstrap.reverse_connection.downstream_reverse_connection_socket_interface");
+    if (registered_downstream_interface) {
+      auto* registered_initiator = dynamic_cast<ReverseConnection::ReverseTunnelInitiator*>(
+          const_cast<Network::SocketInterface*>(registered_downstream_interface));
+      if (registered_initiator) {
+        // Set up the extension for the registered downstream socket interface
+        registered_initiator->extension_ = downstream_extension_.get();
+      }
+    }
+  }
+
+  // Helper method to set up both upstream and downstream extensions
+  void setupExtensions() {
+    setupUpstreamExtension();
+    setupDownstreamExtension();
   }
 
   // Helper function to create a filter with default config
@@ -116,113 +166,90 @@ protected:
     return filter->matchRequestPath(request_path, api_path);
   }
 
-  // Helper function to set up thread local slot for testing upstream socket manager
-  void setupThreadLocalSlot() {
-    setupThreadLocalSlotForTesting();
+  // Helper functions to call private methods in ReverseConnFilter
+  ReverseConnection::UpstreamSocketManager* testGetUpstreamSocketManager(ReverseConnFilter* filter) {
+    return filter->getUpstreamSocketManager();
   }
 
-  // Helper function to create a mock socket with proper address setup
-  Network::ConnectionSocketPtr createMockSocket(int fd = 123,
-                                                const std::string& local_addr = "127.0.0.1:8080",
-                                                const std::string& remote_addr = "127.0.0.1:9090") {
-    auto socket = std::make_unique<NiceMock<Network::MockConnectionSocket>>();
+  const ReverseConnection::ReverseTunnelInitiator* testGetDownstreamSocketInterface(ReverseConnFilter* filter) {
+    return filter->getDownstreamSocketInterface();
+  }
 
-    // Parse local address (IP:port format)
-    auto local_colon_pos = local_addr.find(':');
-    std::string local_ip = local_addr.substr(0, local_colon_pos);
-    uint32_t local_port = std::stoi(local_addr.substr(local_colon_pos + 1));
-    auto local_address = Network::Utility::parseInternetAddressNoThrow(local_ip, local_port);
+  ReverseConnection::ReverseTunnelAcceptorExtension* testGetUpstreamSocketInterfaceExtension(ReverseConnFilter* filter) {
+    return filter->getUpstreamSocketInterfaceExtension();
+  }
 
-    // Parse remote address (IP:port format)
-    auto remote_colon_pos = remote_addr.find(':');
-    std::string remote_ip = remote_addr.substr(0, remote_colon_pos);
-    uint32_t remote_port = std::stoi(remote_addr.substr(remote_colon_pos + 1));
-    auto remote_address = Network::Utility::parseInternetAddressNoThrow(remote_ip, remote_port);
+  ReverseConnection::ReverseTunnelInitiatorExtension* testGetDownstreamSocketInterfaceExtension(ReverseConnFilter* filter) {
+    return filter->getDownstreamSocketInterfaceExtension();
+  }
 
-    // Create a mock IO handle and set it up
-    auto mock_io_handle = std::make_unique<NiceMock<Network::MockIoHandle>>();
-    auto* mock_io_handle_ptr = mock_io_handle.get();
-    EXPECT_CALL(*mock_io_handle_ptr, fdDoNotUse()).WillRepeatedly(Return(fd));
-    EXPECT_CALL(*socket, ioHandle()).WillRepeatedly(ReturnRef(*mock_io_handle_ptr));
+  // Helper function to call the private saveDownstreamConnection method
+  void testSaveDownstreamConnection(ReverseConnFilter* filter, Network::Connection& connection, 
+                                   const std::string& node_id, const std::string& cluster_id) {
+    filter->saveDownstreamConnection(connection, node_id, cluster_id);
+  }
 
-    // Store the mock_io_handle in the socket
-    socket->io_handle_ = std::move(mock_io_handle);
+  // Helper function to test the private getQueryParam method
+  std::string testGetQueryParam(ReverseConnFilter* filter, const std::string& key) {
+    // Call the private method using friend class access
+    return filter->getQueryParam(key);
+  }
 
-    // Set up connection info provider with the desired addresses
-    socket->connection_info_provider_->setLocalAddress(local_address);
-    socket->connection_info_provider_->setRemoteAddress(remote_address);
-
-    return socket;
+  // Helper function to test the private determineRole method
+  std::string testDetermineRole(ReverseConnFilter* filter) {
+    return filter->determineRole();
   }
 
   // Helper function to create a protobuf handshake argument
   std::string createHandshakeArg(const std::string& tenant_uuid, const std::string& cluster_uuid, const std::string& node_uuid) {
-    envoy::extensions::filters::http::reverse_conn::v3::ReverseConnHandshakeArg arg;
+    envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeArg arg;
     arg.set_tenant_uuid(tenant_uuid);
     arg.set_cluster_uuid(cluster_uuid);
     arg.set_node_uuid(node_uuid);
     return arg.SerializeAsString();
   }
 
-  // Helper function to get the upstream socket manager for testing
-  ReverseConnection::UpstreamSocketManager* getUpstreamSocketManager() {
-    // Use the local socket manager that was created in setupThreadLocalSlot
-    if (socket_manager_) {
-      return socket_manager_.get();
-    }
+  // Helper method to set up upstream thread local slot for testing
+  void setupUpstreamThreadLocalSlot() {
+    // Call onServerInitialized to set up the extension references properly
+    upstream_extension_->onServerInitialized();
     
-    // Fallback to accessing through the socket interface if available
-    auto* upstream_interface = Network::socketInterface(
-        "envoy.bootstrap.reverse_connection.upstream_reverse_connection_socket_interface");
-    if (!upstream_interface) {
-      return nullptr;
-    }
+    // Create a thread local registry for upstream with the properly initialized extension
+    upstream_thread_local_registry_ = std::make_shared<ReverseConnection::UpstreamSocketThreadLocal>(
+        dispatcher_, upstream_extension_.get());
+
+    upstream_tls_slot_ = ThreadLocal::TypedSlot<ReverseConnection::UpstreamSocketThreadLocal>::makeUnique(thread_local_);
+    thread_local_.setDispatcher(&dispatcher_);
     
-    auto* upstream_socket_interface =
-        dynamic_cast<const ReverseConnection::ReverseTunnelAcceptor*>(upstream_interface);
-    if (!upstream_socket_interface) {
-      return nullptr;
-    }
+    // Set up the upstream slot to return our registry
+    upstream_tls_slot_->set([registry = upstream_thread_local_registry_](Event::Dispatcher&) { return registry; });
     
-    auto* tls_registry = upstream_socket_interface->getLocalRegistry();
-    if (!tls_registry) {
-      return nullptr;
-    }
+    // Override the TLS slot with our test version
+    upstream_extension_->setTestOnlyTLSRegistry(std::move(upstream_tls_slot_));
+  }
+
+  // Helper method to set up downstream thread local slot for testing
+  void setupDownstreamThreadLocalSlot() {
+    // Call onServerInitialized to set up the extension references properly
+    downstream_extension_->onServerInitialized();
     
-    return tls_registry->socketManager();
+    // Create a thread local registry for downstream with the dispatcher
+    downstream_thread_local_registry_ = std::make_shared<ReverseConnection::DownstreamSocketThreadLocal>(
+        dispatcher_, *stats_scope_);
+
+    downstream_tls_slot_ = ThreadLocal::TypedSlot<ReverseConnection::DownstreamSocketThreadLocal>::makeUnique(thread_local_);
+    
+    // Set up the downstream slot to return our registry
+    downstream_tls_slot_->set([registry = downstream_thread_local_registry_](Event::Dispatcher&) { return registry; });
+    
+    // Override the TLS slot with our test version
+    downstream_extension_->setTestOnlyTLSRegistry(std::move(downstream_tls_slot_));
   }
 
   // Helper method to set up thread local slot for testing
-  void setupThreadLocalSlotForTesting() {
-    // Create the config
-    config_.set_stat_prefix("test_prefix");
-
-    // Create the socket interface
-    socket_interface_ = std::make_unique<ReverseConnection::ReverseTunnelAcceptor>(context_);
-
-    // Create the extension
-    extension_ = std::make_unique<ReverseConnection::ReverseTunnelAcceptorExtension>(
-        *socket_interface_, context_, config_);
-
-    // First, call onServerInitialized to set up the extension reference properly
-    extension_->onServerInitialized();
-
-    // Create a thread local registry with the properly initialized extension
-    thread_local_registry_ = std::make_shared<ReverseConnection::UpstreamSocketThreadLocal>(
-        dispatcher_, extension_.get());
-
-    // Create the actual TypedSlot
-    tls_slot_ = ThreadLocal::TypedSlot<ReverseConnection::UpstreamSocketThreadLocal>::makeUnique(thread_local_);
-    thread_local_.setDispatcher(&dispatcher_);
-
-    // Set up the slot to return our registry
-    tls_slot_->set([registry = thread_local_registry_](Event::Dispatcher&) { return registry; });
-
-    // Use the public setTestOnlyTLSRegistry method instead of accessing private members
-    extension_->setTestOnlyTLSRegistry(std::move(tls_slot_));
-
-    // Create the socket manager
-    socket_manager_ = std::make_unique<ReverseConnection::UpstreamSocketManager>(dispatcher_, extension_.get());
+  void setupThreadLocalSlot() {
+    setupUpstreamThreadLocalSlot();
+    setupDownstreamThreadLocalSlot();
   }
 
   NiceMock<Server::Configuration::MockServerFactoryContext> context_;
@@ -236,46 +263,98 @@ protected:
   NiceMock<Network::MockIoHandle> io_handle_;
   NiceMock<StreamInfo::MockStreamInfo> stream_info_;
   envoy::config::core::v3::Metadata metadata_;
-  NiceMock<Event::MockDispatcher> dispatcher_{"test_dispatcher"};
+  NiceMock<Event::MockDispatcher> dispatcher_{"worker_0"};
   
   // Mock socket for testing
   std::unique_ptr<Network::ConnectionSocket> mock_socket_;
   std::unique_ptr<NiceMock<Network::MockIoHandle>> mock_io_handle_;
-  
-  // Helper method to set up socket mock
-  void setupSocketMock() {
+
+  // Helper method to set up socket mock with proper expectations for tests
+  void setupSocketMock(bool expect_duplicate = true) {
     // Create a mock socket that inherits from ConnectionSocket
     auto mock_socket_ptr = std::make_unique<NiceMock<Network::MockConnectionSocket>>();
-    mock_io_handle_ = std::make_unique<NiceMock<Network::MockIoHandle>>();
+    auto mock_io_handle_ = std::make_unique<NiceMock<Network::MockIoHandle>>();
     
+    // Set up IO handle expectations
     EXPECT_CALL(*mock_io_handle_, fdDoNotUse()).WillRepeatedly(Return(123));
-    EXPECT_CALL(*mock_socket_ptr, ioHandle()).WillRepeatedly(ReturnRef(*mock_io_handle_));
-    mock_socket_ptr->io_handle_ = std::move(mock_io_handle_);
+    EXPECT_CALL(*mock_io_handle_, isOpen()).WillRepeatedly(Return(true));
     
-    // Cast the mock to the base ConnectionSocket type
+    // Only expect duplicate() if the socket will actually be used
+    if (expect_duplicate) {
+      EXPECT_CALL(*mock_io_handle_, duplicate()).WillOnce(Invoke([&]() {
+        auto duplicated_handle = std::make_unique<NiceMock<Network::MockIoHandle>>();
+        EXPECT_CALL(*duplicated_handle, fdDoNotUse()).WillRepeatedly(Return(124));
+        EXPECT_CALL(*duplicated_handle, isOpen()).WillRepeatedly(Return(true));
+        EXPECT_CALL(*duplicated_handle, resetFileEvents()).Times(1);
+        return duplicated_handle;
+      }));
+    }
+    
+    // Set up socket expectations
+    EXPECT_CALL(*mock_socket_ptr, ioHandle()).WillRepeatedly(ReturnRef(*mock_io_handle_));
+    EXPECT_CALL(*mock_socket_ptr, isOpen()).WillRepeatedly(Return(true));
+    
+    // Store the mock_io_handle in the socket
+    mock_socket_ptr->io_handle_ = std::move(mock_io_handle_);
+
+    // Cast the mock to the base ConnectionSocket type and store it
     mock_socket_ = std::unique_ptr<Network::ConnectionSocket>(mock_socket_ptr.release());
     
-    // Set up connection to return the socket - return reference to the unique_ptr
+    // Set up connection to return the socket
     EXPECT_CALL(connection_, getSocket()).WillRepeatedly(ReturnRef(mock_socket_));
   }
   
   // Thread local components for testing upstream socket manager
-  std::unique_ptr<ThreadLocal::TypedSlot<ReverseConnection::UpstreamSocketThreadLocal>> tls_slot_;
-  std::shared_ptr<ReverseConnection::UpstreamSocketThreadLocal> thread_local_registry_;
-  std::unique_ptr<ReverseConnection::UpstreamSocketManager> socket_manager_;
-  std::unique_ptr<ReverseConnection::ReverseTunnelAcceptor> socket_interface_;
-  std::unique_ptr<ReverseConnection::ReverseTunnelAcceptorExtension> extension_;
+  std::unique_ptr<ThreadLocal::TypedSlot<ReverseConnection::UpstreamSocketThreadLocal>> upstream_tls_slot_;
+  std::shared_ptr<ReverseConnection::UpstreamSocketThreadLocal> upstream_thread_local_registry_;
+  std::unique_ptr<ReverseConnection::ReverseTunnelAcceptor> upstream_socket_interface_;
+  std::unique_ptr<ReverseConnection::ReverseTunnelAcceptorExtension> upstream_extension_;
+
+  std::unique_ptr<ThreadLocal::TypedSlot<ReverseConnection::DownstreamSocketThreadLocal>> downstream_tls_slot_;
+  std::shared_ptr<ReverseConnection::DownstreamSocketThreadLocal> downstream_thread_local_registry_;
+  std::unique_ptr<ReverseConnection::ReverseTunnelInitiator> downstream_socket_interface_;
+  std::unique_ptr<ReverseConnection::ReverseTunnelInitiatorExtension> downstream_extension_;
   
   // Config for reverse connection socket interface
-  envoy::extensions::bootstrap::reverse_connection_socket_interface::v3::UpstreamReverseConnectionSocketInterface config_;
+  envoy::extensions::bootstrap::reverse_connection_socket_interface::v3::UpstreamReverseConnectionSocketInterface upstream_config_;
+  envoy::extensions::bootstrap::reverse_connection_socket_interface::v3::DownstreamReverseConnectionSocketInterface downstream_config_;
+
+  // Set debug logging for this test
+  LogLevelSetter log_level_setter_{ENVOY_SPDLOG_LEVEL(debug)};
 
   void TearDown() override {
     // Clean up thread local components
-    tls_slot_.reset();
-    thread_local_registry_.reset();
-    socket_manager_.reset();
-    extension_.reset();
-    socket_interface_.reset();
+    upstream_tls_slot_.reset();
+    upstream_thread_local_registry_.reset();
+    upstream_extension_.reset();
+    upstream_socket_interface_.reset();
+
+    downstream_tls_slot_.reset();
+    downstream_thread_local_registry_.reset();
+    downstream_extension_.reset();
+    downstream_socket_interface_.reset();
+  }
+
+  // Helper method to create an initiated connection for testing
+  void createInitiatedConnection(const std::string& node_id, const std::string& cluster_id) {
+    // Manually set the gauge values to simulate initiated connections
+    setInitiatedConnectionStats(node_id, cluster_id, 1);
+  }
+
+  // Helper method to manually set gauge values for testing initiated connections
+  void setInitiatedConnectionStats(const std::string& node_id, const std::string& cluster_id, uint64_t count = 1) {
+    // Set cross-worker stats (these are the ones used by getCrossWorkerStatMap)
+    auto& stats_store = downstream_extension_->getStatsScope();
+    
+    // Set host connection stat - use the pattern expected by getCrossWorkerStatMap
+    std::string host_stat_name = fmt::format("reverse_connections.host.{}.connected", node_id);
+    auto& host_gauge = stats_store.gaugeFromString(host_stat_name, Stats::Gauge::ImportMode::Accumulate);
+    host_gauge.set(count);
+    
+    // Set cluster connection stat - use the pattern expected by getCrossWorkerStatMap
+    std::string cluster_stat_name = fmt::format("reverse_connections.cluster.{}.connected", cluster_id);
+    auto& cluster_gauge = stats_store.gaugeFromString(cluster_stat_name, Stats::Gauge::ImportMode::Accumulate);
+    cluster_gauge.set(count);
   }
 };
 
@@ -320,6 +399,69 @@ TEST_F(ReverseConnFilterTest, OnDestroy) {
   
   // Should not crash when onDestroy is called
   filter->onDestroy();
+}
+
+// Test helper functions for socket interface access - Extension not created
+TEST_F(ReverseConnFilterTest, SocketInterfaceHelpersNoExtensions) {
+  auto filter = createFilter();
+  
+  // Test all four helper functions when no extensions are created
+  auto* upstream_manager = testGetUpstreamSocketManager(filter.get());
+  auto* upstream_extension = testGetUpstreamSocketInterfaceExtension(filter.get());
+  auto* downstream_extension = testGetDownstreamSocketInterfaceExtension(filter.get());
+
+  EXPECT_EQ(upstream_manager, nullptr); // No TLS registry set up
+  EXPECT_EQ(upstream_extension, nullptr); // No extension set up
+  EXPECT_EQ(downstream_extension, nullptr); // No extension set up
+}
+
+// Test helper functions for socket interface access - Extensions created but no TLS slots
+TEST_F(ReverseConnFilterTest, SocketInterfaceHelpersExtensionsNoSlots) {
+  auto filter = createFilter();
+  
+  // Set up extensions but don't set up TLS slots
+  setupExtensions();
+  
+  // Test all four helper functions when extensions are created but TLS slots are not set up
+  auto* upstream_manager = testGetUpstreamSocketManager(filter.get());
+  auto* upstream_extension = testGetUpstreamSocketInterfaceExtension(filter.get());
+  auto* downstream_extension = testGetDownstreamSocketInterfaceExtension(filter.get());
+  
+  // Upstream manager should be nullptr because TLS registry is not set up
+  EXPECT_EQ(upstream_manager, nullptr);
+  
+  // Extensions should be found since we created them, but TLS slots are not set up
+  EXPECT_NE(upstream_extension, nullptr);
+  EXPECT_EQ(upstream_extension, upstream_extension_.get());
+  EXPECT_NE(downstream_extension, nullptr);
+  EXPECT_EQ(downstream_extension, downstream_extension_.get());
+}
+
+// Test helper functions for socket interface access - Extensions and TLS slots set up
+TEST_F(ReverseConnFilterTest, SocketInterfaceHelpersExtensionsAndSlots) {
+  auto filter = createFilter();
+  
+  // Set up extensions and TLS slots
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  // Test all four helper functions when everything is properly set up
+  auto* upstream_manager = testGetUpstreamSocketManager(filter.get());
+  auto* downstream_interface = testGetDownstreamSocketInterface(filter.get());
+  auto* upstream_extension = testGetUpstreamSocketInterfaceExtension(filter.get());
+  auto* downstream_extension = testGetDownstreamSocketInterfaceExtension(filter.get());
+  
+  // All should be non-null when properly set up
+  EXPECT_NE(upstream_manager, nullptr);
+  EXPECT_EQ(upstream_manager, upstream_thread_local_registry_->socketManager());
+  
+  EXPECT_NE(downstream_interface, nullptr);
+  
+  EXPECT_NE(upstream_extension, nullptr);
+  EXPECT_EQ(upstream_extension, upstream_extension_.get());
+  
+  EXPECT_NE(downstream_extension, nullptr);
+  EXPECT_EQ(downstream_extension, downstream_extension_.get());
 }
 
 // Test decodeHeaders with non-reverse connection path (should continue)
@@ -416,7 +558,8 @@ TEST_F(ReverseConnFilterTest, DecodeHeadersPostNonAcceptPath) {
 
 // Test acceptReverseConnection with valid protobuf data
 TEST_F(ReverseConnFilterTest, AcceptReverseConnectionValidProtobuf) {
-  // Set up thread local slot for upstream socket manager
+  // Set up extensions and thread local slot for upstream socket manager
+  setupExtensions();
   setupThreadLocalSlot();
   
   auto filter = createFilter();
@@ -428,8 +571,8 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionValidProtobuf) {
   auto headers = createHeaders("POST", "/reverse_connections/request");
   headers.setContentLength(std::to_string(handshake_arg.length()));
   
-  // Set up socket mock
-  setupSocketMock();
+  // Set up socket mock with proper expectations
+  setupSocketMock(true); // Expect duplicate() for valid protobuf
   
   // Process headers first
   Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
@@ -443,7 +586,7 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionValidProtobuf) {
   EXPECT_EQ(data_status, Http::FilterDataStatus::StopIterationNoBuffer);
   
   // Verify that the socket was added to the upstream socket manager
-  auto* socket_manager = getUpstreamSocketManager();
+  auto* socket_manager = upstream_thread_local_registry_->socketManager();
   ASSERT_NE(socket_manager, nullptr);
   
   // Try to get the socket for the node - should be available
@@ -451,57 +594,114 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionValidProtobuf) {
   EXPECT_NE(retrieved_socket, nullptr);
   
   // Verify stats were updated
-  auto* extension = socket_manager->getUpstreamExtension();
+  auto* extension = upstream_extension_.get();
   ASSERT_NE(extension, nullptr);
   
   // Get per-worker stats to verify the connection was counted
   auto stat_map = extension->getPerWorkerStatMap();
+
   EXPECT_EQ(stat_map["test_scope.reverse_connections.worker_0.node.node-789"], 1);
   EXPECT_EQ(stat_map["test_scope.reverse_connections.worker_0.cluster.cluster-456"], 1);
 }
 
+// Test acceptReverseConnection with incomplete protobuf data
+TEST_F(ReverseConnFilterTest, AcceptReverseConnectionProtobufIncomplete) {
+  // Set up extensions and thread local slot for upstream socket manager
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  auto filter = createFilter();
+  
+  // Set up headers for reverse connection request with large content length
+  auto headers = createHeaders("POST", "/reverse_connections/request");
+  headers.setContentLength("100"); // Expect 100 bytes but only send 10
+  
+  // Set up socket mock - expect no duplicate() since the socket won't be used
+  setupSocketMock(false);
+  
+  // Process headers first
+  Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
+  EXPECT_EQ(header_status, Http::FilterHeadersStatus::StopIteration);
+  
+  // Create buffer with incomplete protobuf data (less than expected size)
+  Buffer::OwnedImpl data("incomplete");
+  
+  // Process data - this should return StopIterationAndBuffer waiting for more data
+  Http::FilterDataStatus data_status = filter->decodeData(data, true);
+  EXPECT_EQ(data_status, Http::FilterDataStatus::StopIterationAndBuffer);
+
+  // Verify that no socket was added to the upstream socket manager
+  auto* socket_manager = upstream_thread_local_registry_->socketManager();
+  ASSERT_NE(socket_manager, nullptr);
+
+  auto retrieved_socket = socket_manager->getConnectionSocket("node-789");
+  EXPECT_EQ(retrieved_socket, nullptr);
+}
+
 // Test acceptReverseConnection with invalid protobuf data
-TEST_F(ReverseConnFilterTest, AcceptReverseConnectionInvalidProtobuf) {
-  // Set up thread local slot for upstream socket manager
+TEST_F(ReverseConnFilterTest, AcceptReverseConnectionInvalidProtobufParseFailure) {
+  // Set up extensions and thread local slot for upstream socket manager
+  setupExtensions();
   setupThreadLocalSlot();
   
   auto filter = createFilter();
   
   // Set up headers for reverse connection request
   auto headers = createHeaders("POST", "/reverse_connections/request");
-  headers.setContentLength("50");
+  headers.setContentLength("43"); // Match the actual data size we'll send
   
-  // Set up socket mock
-  setupSocketMock();
+  // Set up socket mock - saveDownstreamConnection is not called since after
+  // protobuf unmarshalling since the node_uuid is empty
+  setupSocketMock(false);
+  
+  // Expect sendLocalReply to be called with BadGateway status
+  EXPECT_CALL(callbacks_, sendLocalReply(Http::Code::BadGateway, _, _, _, _))
+      .WillOnce(Invoke([](Http::Code code, absl::string_view body,
+                          std::function<void(Http::ResponseHeaderMap&)>,
+                          const absl::optional<Grpc::Status::GrpcStatus>&,
+                          absl::string_view) {
+        // Verify the HTTP status code
+        EXPECT_EQ(code, Http::Code::BadGateway);
+        
+        // Deserialize the protobuf response to check the actual message
+        envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet ret;
+        EXPECT_TRUE(ret.ParseFromString(std::string(body)));
+        EXPECT_EQ(ret.status(), 
+                  envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet::REJECTED);
+        EXPECT_EQ(ret.status_message(), "Failed to parse request message or required fields missing");
+      }));
   
   // Process headers first
   Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
   EXPECT_EQ(header_status, Http::FilterHeadersStatus::StopIteration);
   
-  // Create buffer with invalid protobuf data
+  // Create buffer with invalid protobuf data that can't be parsed
+  // Send exactly 43 bytes to match the content length
   Buffer::OwnedImpl data("invalid protobuf data that cannot be parsed");
   
-  // Process data - this should call acceptReverseConnection and fail
+  // Process data - this should call acceptReverseConnection and fail parsing
+  // The filter should return StopIterationNoBuffer and send a local reply
   Http::FilterDataStatus data_status = filter->decodeData(data, true);
   EXPECT_EQ(data_status, Http::FilterDataStatus::StopIterationNoBuffer);
-  
+
   // Verify that no socket was added to the upstream socket manager
-  auto* socket_manager = getUpstreamSocketManager();
-  if (socket_manager) {
-    auto retrieved_socket = socket_manager->getConnectionSocket("node-789");
-    EXPECT_EQ(retrieved_socket, nullptr);
-  }
+  auto* socket_manager = upstream_thread_local_registry_->socketManager();
+  ASSERT_NE(socket_manager, nullptr);
+
+  auto retrieved_socket = socket_manager->getConnectionSocket("node-789");
+  EXPECT_EQ(retrieved_socket, nullptr);
 }
 
 // Test acceptReverseConnection with empty node_uuid in protobuf
 TEST_F(ReverseConnFilterTest, AcceptReverseConnectionEmptyNodeUuid) {
-  // Set up thread local slot for upstream socket manager
+  // Set up extensions and thread local slot for upstream socket manager
+  setupExtensions();
   setupThreadLocalSlot();
   
   auto filter = createFilter();
   
   // Create protobuf with empty node_uuid
-  envoy::extensions::filters::http::reverse_conn::v3::ReverseConnHandshakeArg arg;
+  envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeArg arg;
   arg.set_tenant_uuid("tenant-123");
   arg.set_cluster_uuid("cluster-456");
   arg.set_node_uuid(""); // Empty node_uuid
@@ -511,8 +711,25 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionEmptyNodeUuid) {
   auto headers = createHeaders("POST", "/reverse_connections/request");
   headers.setContentLength(std::to_string(handshake_arg.length()));
   
-  // Set up socket mock
-  setupSocketMock();
+  // Set up socket mock - since the node_uuid is empty, the socket is not saved
+  setupSocketMock(false);
+  
+  // Expect sendLocalReply to be called with BadGateway status for empty node_uuid
+  EXPECT_CALL(callbacks_, sendLocalReply(Http::Code::BadGateway, _, _, _, _))
+      .WillOnce(Invoke([](Http::Code code, absl::string_view body,
+                          std::function<void(Http::ResponseHeaderMap&)>,
+                          const absl::optional<Grpc::Status::GrpcStatus>&,
+                          absl::string_view) {
+        // Verify the HTTP status code
+        EXPECT_EQ(code, Http::Code::BadGateway);
+        
+        // Deserialize the protobuf response to check the actual message
+        envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet ret;
+        EXPECT_TRUE(ret.ParseFromString(std::string(body)));
+        EXPECT_EQ(ret.status(), 
+                  envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet::REJECTED);
+        EXPECT_EQ(ret.status_message(), "Failed to parse request message or required fields missing");
+      }));
   
   // Process headers first
   Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
@@ -525,17 +742,22 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionEmptyNodeUuid) {
   Http::FilterDataStatus data_status = filter->decodeData(data, true);
   EXPECT_EQ(data_status, Http::FilterDataStatus::StopIterationNoBuffer);
   
-  // Verify that no socket was added to the upstream socket manager
-  auto* socket_manager = getUpstreamSocketManager();
-  if (socket_manager) {
-    auto retrieved_socket = socket_manager->getConnectionSocket("");
-    EXPECT_EQ(retrieved_socket, nullptr);
-  }
+  // Check that no stats were recorded for the cluster
+  auto* socket_manager = upstream_thread_local_registry_->socketManager();
+  ASSERT_NE(socket_manager, nullptr);
+  
+  auto* extension = socket_manager->getUpstreamExtension();
+  ASSERT_NE(extension, nullptr);
+  
+  // Get cross-worker stats to verify no connection was counted
+  auto cross_worker_stat_map = upstream_extension_->getCrossWorkerStatMap();
+  EXPECT_EQ(cross_worker_stat_map["test_scope.reverse_connections.clusters.cluster-456"], 0);
 }
 
 // Test acceptReverseConnection with SSL certificate information
 TEST_F(ReverseConnFilterTest, AcceptReverseConnectionWithSSLCertificate) {
-  // Set up thread local slot for upstream socket manager
+  // Set up extensions and thread local slot for upstream socket manager
+  setupExtensions();
   setupThreadLocalSlot();
   
   auto filter = createFilter();
@@ -557,7 +779,7 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionWithSSLCertificate) {
   EXPECT_CALL(connection_, ssl()).WillRepeatedly(Return(mock_ssl));
   
   // Set up socket mock
-  setupSocketMock();
+  setupSocketMock(true); // Expect duplicate() for SSL test
   
   // Process headers first
   Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
@@ -569,10 +791,9 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionWithSSLCertificate) {
   // Process data - this should call acceptReverseConnection
   Http::FilterDataStatus data_status = filter->decodeData(data, true);
   EXPECT_EQ(data_status, Http::FilterDataStatus::StopIterationNoBuffer);
-  
+
   // Verify that the socket was added to the upstream socket manager
-  // SSL certificate values should override protobuf values
-  auto* socket_manager = getUpstreamSocketManager();
+  auto* socket_manager = upstream_thread_local_registry_->socketManager();
   ASSERT_NE(socket_manager, nullptr);
   
   // Try to get the socket for the node - should be available
@@ -582,7 +803,8 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionWithSSLCertificate) {
 
 // Test acceptReverseConnection with multiple sockets for same node
 TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleSockets) {
-  // Set up thread local slot for upstream socket manager
+  // Set up extensions and thread local slot for upstream socket manager
+  setupExtensions();
   setupThreadLocalSlot();
   
   auto filter = createFilter();
@@ -594,8 +816,8 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleSockets) {
   auto headers = createHeaders("POST", "/reverse_connections/request");
   headers.setContentLength(std::to_string(handshake_arg.length()));
   
-  // Set up socket mock
-  setupSocketMock();
+  // Set up socket mock for first connection
+  setupSocketMock(true);
   
   // Process headers first
   Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
@@ -615,6 +837,9 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleSockets) {
   auto headers2 = createHeaders("POST", "/reverse_connections/request");
   headers2.setContentLength(std::to_string(handshake_arg.length()));
   
+  // Set up socket mock for second connection
+  setupSocketMock(true);
+  
   // Process headers for second connection
   Http::FilterHeadersStatus header_status2 = filter2->decodeHeaders(headers2, false);
   EXPECT_EQ(header_status2, Http::FilterHeadersStatus::StopIteration);
@@ -627,7 +852,7 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleSockets) {
   EXPECT_EQ(data_status2, Http::FilterDataStatus::StopIterationNoBuffer);
   
   // Verify that both sockets were added to the upstream socket manager
-  auto* socket_manager = getUpstreamSocketManager();
+  auto* socket_manager = upstream_thread_local_registry_->socketManager();
   ASSERT_NE(socket_manager, nullptr);
   
   // Try to get the first socket for the node
@@ -639,7 +864,7 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleSockets) {
   EXPECT_NE(retrieved_socket2, nullptr);
   
   // Verify stats were updated correctly for multiple connections
-  auto* extension = socket_manager->getUpstreamExtension();
+  auto* extension = upstream_extension_.get();
   ASSERT_NE(extension, nullptr);
   
   // Get per-worker stats to verify the connections were counted
@@ -648,55 +873,10 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleSockets) {
   EXPECT_EQ(stat_map["test_scope.reverse_connections.worker_0.cluster.cluster-456"], 2);
 }
 
-// Test acceptReverseConnection with cross-worker stats verification
-TEST_F(ReverseConnFilterTest, AcceptReverseConnectionCrossWorkerStats) {
-  // Set up thread local slot for upstream socket manager
-  setupThreadLocalSlot();
-  
-  auto filter = createFilter();
-  
-  // Create valid protobuf handshake argument
-  std::string handshake_arg = createHandshakeArg("tenant-123", "cluster-456", "node-789");
-  
-  // Set up headers for reverse connection request
-  auto headers = createHeaders("POST", "/reverse_connections/request");
-  headers.setContentLength(std::to_string(handshake_arg.length()));
-  
-  // Set up socket mock
-  setupSocketMock();
-  
-  // Process headers first
-  Http::FilterHeadersStatus header_status = filter->decodeHeaders(headers, false);
-  EXPECT_EQ(header_status, Http::FilterHeadersStatus::StopIteration);
-  
-  // Create buffer with protobuf data
-  Buffer::OwnedImpl data(handshake_arg);
-  
-  // Process data - this should call acceptReverseConnection
-  Http::FilterDataStatus data_status = filter->decodeData(data, true);
-  EXPECT_EQ(data_status, Http::FilterDataStatus::StopIterationNoBuffer);
-  
-  // Verify that the socket was added to the upstream socket manager
-  auto* socket_manager = getUpstreamSocketManager();
-  ASSERT_NE(socket_manager, nullptr);
-  
-  // Try to get the socket for the node - should be available
-  auto retrieved_socket = socket_manager->getConnectionSocket("node-789");
-  EXPECT_NE(retrieved_socket, nullptr);
-  
-  // Verify cross-worker stats were updated correctly
-  auto* extension = socket_manager->getUpstreamExtension();
-  ASSERT_NE(extension, nullptr);
-  
-  // Get cross-worker stats to verify the connection was counted
-  auto cross_worker_stat_map = extension->getCrossWorkerStatMap();
-  EXPECT_EQ(cross_worker_stat_map["test_scope.reverse_connections.nodes.node-789"], 1);
-  EXPECT_EQ(cross_worker_stat_map["test_scope.reverse_connections.clusters.cluster-456"], 1);
-}
-
 // Test acceptReverseConnection with multiple nodes and clusters for cross-worker stats
 TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleNodesCrossWorkerStats) {
-  // Set up thread local slot for upstream socket manager
+  // Set up extensions and thread local slot for upstream socket manager
+  setupExtensions();
   setupThreadLocalSlot();
   
   // Create first filter and connection
@@ -706,7 +886,7 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleNodesCrossWorkerSta
   headers1.setContentLength(std::to_string(handshake_arg1.length()));
   
   // Set up socket mock for first connection
-  setupSocketMock();
+  setupSocketMock(true);
   
   Http::FilterHeadersStatus header_status1 = filter1->decodeHeaders(headers1, false);
   EXPECT_EQ(header_status1, Http::FilterHeadersStatus::StopIteration);
@@ -722,7 +902,7 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleNodesCrossWorkerSta
   headers2.setContentLength(std::to_string(handshake_arg2.length()));
   
   // Set up socket mock for second connection
-  setupSocketMock();
+  setupSocketMock(true);
   
   Http::FilterHeadersStatus header_status2 = filter2->decodeHeaders(headers2, false);
   EXPECT_EQ(header_status2, Http::FilterHeadersStatus::StopIteration);
@@ -732,7 +912,7 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleNodesCrossWorkerSta
   EXPECT_EQ(data_status2, Http::FilterDataStatus::StopIterationNoBuffer);
   
   // Verify that both sockets were added to the upstream socket manager
-  auto* socket_manager = getUpstreamSocketManager();
+  auto* socket_manager = upstream_thread_local_registry_->socketManager();
   ASSERT_NE(socket_manager, nullptr);
   
   // Try to get both sockets
@@ -743,7 +923,7 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleNodesCrossWorkerSta
   EXPECT_NE(retrieved_socket2, nullptr);
   
   // Verify cross-worker stats were updated correctly for both connections
-  auto* extension = socket_manager->getUpstreamExtension();
+  auto* extension = upstream_extension_.get();
   ASSERT_NE(extension, nullptr);
   
   // Get cross-worker stats to verify both connections were counted
@@ -752,6 +932,404 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionMultipleNodesCrossWorkerSta
   EXPECT_EQ(cross_worker_stat_map["test_scope.reverse_connections.clusters.cluster-456"], 1);
   EXPECT_EQ(cross_worker_stat_map["test_scope.reverse_connections.nodes.node-123"], 1);
   EXPECT_EQ(cross_worker_stat_map["test_scope.reverse_connections.clusters.cluster-789"], 1);
+}
+
+
+// Test saveDownstreamConnection without socket manager initialized
+TEST_F(ReverseConnFilterTest, SaveDownstreamConnectionNoSocketManager) {
+  // Set up extensions but not thread local slot - socket manager will not be initialized
+  setupExtensions();
+  auto filter = createFilter();
+  
+  // Set up socket mock
+  setupSocketMock(false);
+  
+  // Call saveDownstreamConnection - should fail since socket manager is not initialized
+  testSaveDownstreamConnection(filter.get(), connection_, "node-789", "cluster-456");
+
+  // Check that no stats were recorded since the socket manager is not available
+  auto* extension = upstream_extension_.get();
+  ASSERT_NE(extension, nullptr);
+  
+  // Get per-worker stats to verify no connection was counted
+  auto stat_map = extension->getPerWorkerStatMap();
+  EXPECT_EQ(stat_map["test_scope.reverse_connections.worker_0.node.node-789"], 0);
+  EXPECT_EQ(stat_map["test_scope.reverse_connections.worker_0.cluster.cluster-456"], 0);
+}
+
+// Test saveDownstreamConnection with original socket closure
+TEST_F(ReverseConnFilterTest, SaveDownstreamConnectionOriginalSocketClosed) {
+  // Set up extensions and thread local slot for upstream socket manager
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  auto filter = createFilter();
+  
+  // Set up socket mock with closed socket
+  auto mock_socket_ptr = std::make_unique<NiceMock<Network::MockConnectionSocket>>();
+  auto mock_io_handle_ = std::make_unique<NiceMock<Network::MockIoHandle>>();
+  
+  // Set up IO handle expectations for closed socket
+  EXPECT_CALL(*mock_io_handle_, fdDoNotUse()).WillRepeatedly(Return(123));
+  EXPECT_CALL(*mock_io_handle_, isOpen()).WillRepeatedly(Return(false)); // Socket is closed
+  
+  // Don't expect duplicate() since socket is closed
+  EXPECT_CALL(*mock_io_handle_, duplicate()).Times(0);
+  
+  // Set up socket expectations
+  EXPECT_CALL(*mock_socket_ptr, ioHandle()).WillRepeatedly(ReturnRef(*mock_io_handle_));
+  EXPECT_CALL(*mock_socket_ptr, isOpen()).WillRepeatedly(Return(false)); // Socket is closed
+  
+  // Store the mock_io_handle in the socket
+  mock_socket_ptr->io_handle_ = std::move(mock_io_handle_);
+  
+  // Cast the mock to the base ConnectionSocket type and store it
+  mock_socket_ = std::unique_ptr<Network::ConnectionSocket>(mock_socket_ptr.release());
+  
+  // Set up connection to return the socket
+  EXPECT_CALL(connection_, getSocket()).WillRepeatedly(ReturnRef(mock_socket_));
+  
+  // Call saveDownstreamConnection directly - should fail since socket is closed
+  testSaveDownstreamConnection(filter.get(), connection_, "node-789", "cluster-456");
+
+  // Check that no stats were recorded since the socket was closed
+  auto* extension = upstream_extension_.get();
+  ASSERT_NE(extension, nullptr);
+  
+  // Get per-worker stats to verify no connection was counted
+  auto stat_map = extension->getPerWorkerStatMap();
+  EXPECT_EQ(stat_map["test_scope.reverse_connections.worker_0.node.node-789"], 0);
+  EXPECT_EQ(stat_map["test_scope.reverse_connections.worker_0.cluster.cluster-456"], 0);
+}
+
+// Test saveDownstreamConnection with duplicate failure
+TEST_F(ReverseConnFilterTest, SaveDownstreamConnectionDuplicateFailure) {
+  // Set up extensions and thread local slot for upstream socket manager
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  auto filter = createFilter();
+  
+  // Set up socket mock with duplicate failure
+  auto mock_socket_ptr = std::make_unique<NiceMock<Network::MockConnectionSocket>>();
+  auto mock_io_handle_ = std::make_unique<NiceMock<Network::MockIoHandle>>();
+  
+  // Set up IO handle expectations
+  EXPECT_CALL(*mock_io_handle_, fdDoNotUse()).WillRepeatedly(Return(123));
+  EXPECT_CALL(*mock_io_handle_, isOpen()).WillRepeatedly(Return(true));
+  
+  // Expect duplicate() to fail (return nullptr)
+  EXPECT_CALL(*mock_io_handle_, duplicate()).WillOnce(Return(nullptr));
+  
+  // Set up socket expectations
+  EXPECT_CALL(*mock_socket_ptr, ioHandle()).WillRepeatedly(ReturnRef(*mock_io_handle_));
+  EXPECT_CALL(*mock_socket_ptr, isOpen()).WillRepeatedly(Return(true));
+  
+  // Store the mock_io_handle in the socket
+  mock_socket_ptr->io_handle_ = std::move(mock_io_handle_);
+  
+  // Cast the mock to the base ConnectionSocket type and store it
+  mock_socket_ = std::unique_ptr<Network::ConnectionSocket>(mock_socket_ptr.release());
+  
+  // Set up connection to return the socket
+  EXPECT_CALL(connection_, getSocket()).WillRepeatedly(ReturnRef(mock_socket_));
+  
+  // Call saveDownstreamConnection directly - should fail since duplicate() returns nullptr
+  testSaveDownstreamConnection(filter.get(), connection_, "node-789", "cluster-456");
+  
+  // Check that no stats were recorded since the duplicate operation failed
+  auto* extension = upstream_extension_.get();
+  ASSERT_NE(extension, nullptr);
+  
+  // Get per-worker stats to verify no connection was counted
+  auto stat_map = extension->getPerWorkerStatMap();
+  EXPECT_EQ(stat_map["test_scope.reverse_connections.worker_0.node.node-789"], 0);
+  EXPECT_EQ(stat_map["test_scope.reverse_connections.worker_0.cluster.cluster-456"], 0);
+}
+
+// Test getQueryParam
+TEST_F(ReverseConnFilterTest, GetQueryParamAllCases) {
+  // Set up extensions and thread local slots to avoid crashes
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  auto filter = createFilter();
+
+  // Test with existing query parameters - use a reverse-connection path but with GET method to avoid triggering the full logic
+  auto headers = createHeaders("GET", "/reverse_connections?node_id=test-node&cluster_id=test-cluster&role=initiator");
+  // Call decodeHeaders to properly set up the request headers
+  Http::FilterHeadersStatus status = filter->decodeHeaders(headers, true);
+  EXPECT_EQ(status, Http::FilterHeadersStatus::StopIteration);
+  
+  EXPECT_EQ(testGetQueryParam(filter.get(), "node_id"), "test-node");
+  EXPECT_EQ(testGetQueryParam(filter.get(), "cluster_id"), "test-cluster");
+  EXPECT_EQ(testGetQueryParam(filter.get(), "role"), "initiator");
+
+  // Test with non-existent query parameter
+  EXPECT_EQ(testGetQueryParam(filter.get(), "non_existent"), "");
+
+  // Test with empty query string
+  auto headers_empty = createHeaders("GET", "/reverse_connections");
+  auto filter_empty = createFilter();
+  Http::FilterHeadersStatus status_empty = filter_empty->decodeHeaders(headers_empty, true);
+  EXPECT_EQ(status_empty, Http::FilterHeadersStatus::StopIteration);
+  
+  EXPECT_EQ(testGetQueryParam(filter_empty.get(), "node_id"), "");
+  EXPECT_EQ(testGetQueryParam(filter_empty.get(), "cluster_id"), "");
+  EXPECT_EQ(testGetQueryParam(filter_empty.get(), "role"), "");
+}
+
+// Test determineRole with different interface registration scenarios
+TEST_F(ReverseConnFilterTest, DetermineRoleDifferentInterfaceRegistration) {
+  // Test with only downstream extension enabled - should return "initiator"
+  auto filter_downstream_only = createFilter();
+  setupDownstreamExtension();
+  setupDownstreamThreadLocalSlot();
+  EXPECT_EQ(testDetermineRole(filter_downstream_only.get()), "initiator");
+
+  // Test with both extensions enabled - should return "both"
+  auto filter_both = createFilter();
+  setupExtensions();
+  setupThreadLocalSlot();
+  EXPECT_EQ(testDetermineRole(filter_both.get()), "both");
+}
+
+// Test GET request with initiator role -  with remote node
+TEST_F(ReverseConnFilterTest, GetRequestInitiatorRoleWithRemoteNode) {
+  // Set up both extensions
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  // Create an initiated connection by setting stats
+  createInitiatedConnection("test-node", "test-cluster");
+  
+  // Now test the GET request
+  auto filter = createFilter();
+  
+  // Create GET request with initiator role and remote node
+  auto headers = createHeaders("GET", "/reverse_connections?role=initiator&node_id=test-node");
+  
+  // Expect sendLocalReply to be called with OK status and node-specific stats
+  EXPECT_CALL(callbacks_, sendLocalReply(Http::Code::OK, _, _, _, _))
+      .WillOnce(Invoke([](Http::Code code, absl::string_view body,
+                          std::function<void(Http::ResponseHeaderMap&)>,
+                          const absl::optional<Grpc::Status::GrpcStatus>&,
+                          absl::string_view) {
+        EXPECT_EQ(code, Http::Code::OK);
+        // Should return JSON with available_connections for the specific node
+        EXPECT_TRUE(body.find("available_connections") != absl::string_view::npos);
+        // Should return count of 1 since we manually set the stats
+        EXPECT_TRUE(body.find("\"available_connections\":1") != absl::string_view::npos);
+      }));
+  
+  Http::FilterHeadersStatus status = filter->decodeHeaders(headers, true);
+  EXPECT_EQ(status, Http::FilterHeadersStatus::StopIteration);
+}
+
+// Test GET request with initiator role - with remote cluster
+TEST_F(ReverseConnFilterTest, GetRequestInitiatorRoleWithRemoteCluster) {
+  // Set up both extensions
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  // Create an initiated connection by setting stats
+  createInitiatedConnection("test-node", "test-cluster");
+  
+  // Now test the GET request
+  auto filter = createFilter();
+  
+  // Create GET request with initiator role and remote cluster
+  auto headers = createHeaders("GET", "/reverse_connections?role=initiator&cluster_id=test-cluster");
+  
+  // Expect sendLocalReply to be called with OK status and cluster-specific stats
+  EXPECT_CALL(callbacks_, sendLocalReply(Http::Code::OK, _, _, _, _))
+      .WillOnce(Invoke([](Http::Code code, absl::string_view body,
+                          std::function<void(Http::ResponseHeaderMap&)>,
+                          const absl::optional<Grpc::Status::GrpcStatus>&,
+                          absl::string_view) {
+        EXPECT_EQ(code, Http::Code::OK);
+        // Should return JSON with available_connections for the specific cluster
+        EXPECT_TRUE(body.find("available_connections") != absl::string_view::npos);
+        // Should return count of 1 since we manually set the stats
+        EXPECT_TRUE(body.find("\"available_connections\":1") != absl::string_view::npos);
+      }));
+  
+  Http::FilterHeadersStatus status = filter->decodeHeaders(headers, true);
+  EXPECT_EQ(status, Http::FilterHeadersStatus::StopIteration);
+}
+
+// Test GET request with initiator role - no node/cluster (aggregated stats)
+TEST_F(ReverseConnFilterTest, GetRequestInitiatorRoleAggregatedStats) {
+  // Set up both extensions
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  // Create an initiated connection by setting stats
+  createInitiatedConnection("test-node", "test-cluster");
+  
+  // Now test the GET request
+  auto filter = createFilter();
+  
+  // Create GET request with initiator role but no node_id or cluster_id
+  auto headers = createHeaders("GET", "/reverse_connections?role=initiator");
+  
+  // Expect sendLocalReply to be called with OK status and aggregated stats
+  EXPECT_CALL(callbacks_, sendLocalReply(Http::Code::OK, _, _, _, _))
+      .WillOnce(Invoke([](Http::Code code, absl::string_view body,
+                          std::function<void(Http::ResponseHeaderMap&)>,
+                          const absl::optional<Grpc::Status::GrpcStatus>&,
+                          absl::string_view) {
+        EXPECT_EQ(code, Http::Code::OK);
+        // Should return JSON with aggregated stats (accepted and connected arrays)
+        EXPECT_TRUE(body.find("accepted") != absl::string_view::npos);
+        EXPECT_TRUE(body.find("connected") != absl::string_view::npos);
+        // Should show test-cluster in the connected array since we set the stats
+        EXPECT_TRUE(body.find("test-cluster") != absl::string_view::npos);
+      }));
+  
+  Http::FilterHeadersStatus status = filter->decodeHeaders(headers, true);
+  EXPECT_EQ(status, Http::FilterHeadersStatus::StopIteration);
+}
+
+// Test GET request with responder role - upstream extension present, with remote node
+TEST_F(ReverseConnFilterTest, GetRequestResponderRoleWithRemoteNode) {
+  // Set up both extensions
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  // Create an accepted connection by sending a reverse connection request
+  auto filter1 = createFilter();
+  std::string handshake_arg = createHandshakeArg("tenant-123", "cluster-456", "node-789");
+  auto headers1 = createHeaders("POST", "/reverse_connections/request");
+  headers1.setContentLength(std::to_string(handshake_arg.length()));
+  
+  // Set up socket mock for the connection
+  setupSocketMock(true);
+  
+  // Process the reverse connection request to create an accepted connection
+  Http::FilterHeadersStatus header_status = filter1->decodeHeaders(headers1, false);
+  EXPECT_EQ(header_status, Http::FilterHeadersStatus::StopIteration);
+  
+  Buffer::OwnedImpl data(handshake_arg);
+  Http::FilterDataStatus data_status = filter1->decodeData(data, true);
+  EXPECT_EQ(data_status, Http::FilterDataStatus::StopIterationNoBuffer);
+  
+  // Now test the GET request
+  auto filter2 = createFilter();
+  
+  // Create GET request with responder role and remote node
+  auto headers2 = createHeaders("GET", "/reverse_connections?role=responder&node_id=node-789");
+  
+  // Expect sendLocalReply to be called with OK status and node-specific stats
+  EXPECT_CALL(callbacks_, sendLocalReply(Http::Code::OK, _, _, _, _))
+      .WillOnce(Invoke([](Http::Code code, absl::string_view body,
+                          std::function<void(Http::ResponseHeaderMap&)>,
+                          const absl::optional<Grpc::Status::GrpcStatus>&,
+                          absl::string_view) {
+        EXPECT_EQ(code, Http::Code::OK);
+        // Should return JSON with available_connections for the specific node
+        EXPECT_TRUE(body.find("available_connections") != absl::string_view::npos);
+        // Should return count of 1 since we created an actual connection
+        EXPECT_TRUE(body.find("\"available_connections\":1") != absl::string_view::npos);
+      }));
+  
+  Http::FilterHeadersStatus status = filter2->decodeHeaders(headers2, true);
+  EXPECT_EQ(status, Http::FilterHeadersStatus::StopIteration);
+}
+
+// Test GET request with responder role - upstream extension present, with remote cluster
+TEST_F(ReverseConnFilterTest, GetRequestResponderRoleWithRemoteCluster) {
+  // Set up both extensions
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  // Create an accepted connection by sending a reverse connection request
+  auto filter1 = createFilter();
+  std::string handshake_arg = createHandshakeArg("tenant-123", "cluster-456", "node-789");
+  auto headers1 = createHeaders("POST", "/reverse_connections/request");
+  headers1.setContentLength(std::to_string(handshake_arg.length()));
+  
+  // Set up socket mock for the connection
+  setupSocketMock(true);
+  
+  // Process the reverse connection request to create an accepted connection
+  Http::FilterHeadersStatus header_status = filter1->decodeHeaders(headers1, false);
+  EXPECT_EQ(header_status, Http::FilterHeadersStatus::StopIteration);
+  
+  Buffer::OwnedImpl data(handshake_arg);
+  Http::FilterDataStatus data_status = filter1->decodeData(data, true);
+  EXPECT_EQ(data_status, Http::FilterDataStatus::StopIterationNoBuffer);
+  
+  // Now test the GET request
+  auto filter2 = createFilter();
+  
+  // Create GET request with responder role and remote cluster
+  auto headers2 = createHeaders("GET", "/reverse_connections?role=responder&cluster_id=cluster-456");
+  
+  // Expect sendLocalReply to be called with OK status and cluster-specific stats
+  EXPECT_CALL(callbacks_, sendLocalReply(Http::Code::OK, _, _, _, _))
+      .WillOnce(Invoke([](Http::Code code, absl::string_view body,
+                          std::function<void(Http::ResponseHeaderMap&)>,
+                          const absl::optional<Grpc::Status::GrpcStatus>&,
+                          absl::string_view) {
+        EXPECT_EQ(code, Http::Code::OK);
+        // Should return JSON with available_connections for the specific cluster
+        EXPECT_TRUE(body.find("available_connections") != absl::string_view::npos);
+        // Should return count of 1 since we created an actual connection
+        EXPECT_TRUE(body.find("\"available_connections\":1") != absl::string_view::npos);
+      }));
+  
+  Http::FilterHeadersStatus status = filter2->decodeHeaders(headers2, true);
+  EXPECT_EQ(status, Http::FilterHeadersStatus::StopIteration);
+}
+
+// Test GET request with responder role - upstream extension present, no node/cluster (aggregated stats)
+TEST_F(ReverseConnFilterTest, GetRequestResponderRoleAggregatedStats) {
+  // Set up both extensions
+  setupExtensions();
+  setupThreadLocalSlot();
+  
+  // Create an accepted connection by sending a reverse connection request
+  auto filter1 = createFilter();
+  std::string handshake_arg = createHandshakeArg("tenant-123", "cluster-456", "node-789");
+  auto headers1 = createHeaders("POST", "/reverse_connections/request");
+  headers1.setContentLength(std::to_string(handshake_arg.length()));
+  
+  // Set up socket mock for the connection
+  setupSocketMock(true);
+  
+  // Process the reverse connection request to create an accepted connection
+  Http::FilterHeadersStatus header_status = filter1->decodeHeaders(headers1, false);
+  EXPECT_EQ(header_status, Http::FilterHeadersStatus::StopIteration);
+  
+  Buffer::OwnedImpl data(handshake_arg);
+  Http::FilterDataStatus data_status = filter1->decodeData(data, true);
+  EXPECT_EQ(data_status, Http::FilterDataStatus::StopIterationNoBuffer);
+  
+  // Now test the GET request
+  auto filter2 = createFilter();
+  
+  // Create GET request with responder role but no node_id or cluster_id
+  auto headers2 = createHeaders("GET", "/reverse_connections?role=responder");
+  
+  // Expect sendLocalReply to be called with OK status and aggregated stats
+  EXPECT_CALL(callbacks_, sendLocalReply(Http::Code::OK, _, _, _, _))
+      .WillOnce(Invoke([](Http::Code code, absl::string_view body,
+                          std::function<void(Http::ResponseHeaderMap&)>,
+                          const absl::optional<Grpc::Status::GrpcStatus>&,
+                          absl::string_view) {
+        EXPECT_EQ(code, Http::Code::OK);
+        // Should return JSON with aggregated stats (accepted and connected arrays)
+        EXPECT_TRUE(body.find("accepted") != absl::string_view::npos);
+        EXPECT_TRUE(body.find("connected") != absl::string_view::npos);
+        // Should show cluster-456 in the accepted array since we created an actual connection
+        EXPECT_TRUE(body.find("cluster-456") != absl::string_view::npos);
+        // Should show node-789 in the connected array since we created an actual connection
+        EXPECT_TRUE(body.find("node-789") != absl::string_view::npos);
+      }));
+  
+  Http::FilterHeadersStatus status = filter2->decodeHeaders(headers2, true);
+  EXPECT_EQ(status, Http::FilterHeadersStatus::StopIteration);
 }
 
 } // namespace ReverseConn
