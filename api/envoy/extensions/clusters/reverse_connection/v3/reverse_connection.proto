@@ -3,7 +3,6 @@ syntax = "proto3";
 package envoy.extensions.clusters.reverse_connection.v3;
 
 import "google/protobuf/duration.proto";
-import "google/protobuf/wrappers.proto";
 
 import "udpa/annotations/status.proto";
 import "validate/validate.proto";
@@ -13,7 +12,6 @@ option java_outer_classname = "ReverseConnectionProto";
 option java_multiple_files = true;
 option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/clusters/reverse_connection/v3;reverse_connectionv3";
 option (udpa.annotations.file_status).package_version_status = ACTIVE;
-option (udpa.annotations.file_status).work_in_progress = true;
 
 // [#protodoc-title: Settings for the Reverse Connection Cluster]
 // [#extension: envoy.clusters.reverse_connection]
@@ -30,4 +28,4 @@ message RevConClusterConfig {
   // Suffix expected in the host header when envoy acts as a L4 proxy and deduces
   // the cluster from the host header.
   string proxy_host_suffix = 3;
-} 
+}

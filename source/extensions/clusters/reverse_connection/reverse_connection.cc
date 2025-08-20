@@ -10,8 +10,8 @@
 #include "envoy/config/core/v3/health_check.pb.h"
 #include "envoy/config/endpoint/v3/endpoint_components.pb.h"
 
-#include "source/common/http/headers.h"
 #include "source/common/http/header_utility.h"
+#include "source/common/http/headers.h"
 #include "source/common/network/address_impl.h"
 #include "source/common/protobuf/protobuf.h"
 #include "source/common/protobuf/utility.h"
@@ -24,7 +24,7 @@ namespace ReverseConnection {
 
 namespace BootstrapReverseConnection = Envoy::Extensions::Bootstrap::ReverseConnection;
 
-// The default host header envoy expects when acting as a L4 proxy is of the format
+// The default host header envoy expects when acting as a L4 proxy is of the format.
 // "<uuid>.tcpproxy.envoy.remote:<remote_port>".
 const std::string default_proxy_host_suffix = "tcpproxy.envoy.remote";
 
@@ -68,19 +68,17 @@ RevConCluster::LoadBalancer::getUUIDFromSNI(const Network::Connection* connectio
 
   absl::string_view sni = connection->requestedServerName();
   ENVOY_LOG(debug, "SNI value: {}", sni);
-  
+
   if (sni.empty()) {
     ENVOY_LOG(debug, "Empty SNI value");
     return absl::nullopt;
   }
-  
+
   // Extract the UUID from SNI. SNI format is expected to be "<uuid>.tcpproxy.envoy.remote"
   const absl::string_view::size_type uuid_start = sni.find('.');
   if (uuid_start == absl::string_view::npos ||
       sni.substr(uuid_start + 1) != parent_->proxy_host_suffix_) {
-    ENVOY_LOG(error,
-              "Malformed SNI {}. Expected: <node_uuid>.tcpproxy.envoy.remote",
-              sni);
+    ENVOY_LOG(error, "Malformed SNI {}. Expected: <node_uuid>.tcpproxy.envoy.remote", sni);
     return absl::nullopt;
   }
   return sni.substr(0, uuid_start);
@@ -104,7 +102,7 @@ RevConCluster::LoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) 
     return {nullptr};
   }
 
-  // First, Check for the presence of headers in RevConClusterConfig's http_header_names in
+  // First, Check for the presence of headers in RevConClusterConfig's http_header_names in.
   // the request context. In the absence of http_header_names in RevConClusterConfig, this
   // checks for the presence of EnvoyDstNodeUUID and EnvoyDstClusterUUID headers by default.
   const std::string host_id = std::string(parent_->getHostIdValue(context->downstreamHeaders()));
@@ -135,14 +133,15 @@ RevConCluster::LoadBalancer::chooseHost(Upstream::LoadBalancerContext* context) 
 
 Upstream::HostSelectionResponse RevConCluster::checkAndCreateHost(const std::string host_id) {
 
-  // Get the SocketManager to resolve cluster ID to node ID
+  // Get the SocketManager to resolve cluster ID to node ID.
   auto* socket_manager = getUpstreamSocketManager();
   if (socket_manager == nullptr) {
-    ENVOY_LOG(error, "Socket manager not found");
+    ENVOY_LOG(error, "RevConCluster: Cannot create host for key: {} Socket manager not found",
+              host_id);
     return {nullptr};
   }
 
-  // Use SocketManager to resolve the key to a node ID
+  // Use SocketManager to resolve the key to a node ID.
   std::string node_id = socket_manager->getNodeID(host_id);
   ENVOY_LOG(debug, "RevConCluster: Resolved key '{}' to node_id '{}'", host_id, node_id);
 
@@ -151,7 +150,7 @@ Upstream::HostSelectionResponse RevConCluster::checkAndCreateHost(const std::str
   // that envoy reuses a conn_pool_container for an endpoint.
   auto host_itr = host_map_.find(node_id);
   if (host_itr != host_map_.end()) {
-    ENVOY_LOG(debug, "Found an existing host for {}.", node_id);
+    ENVOY_LOG(debug, "RevConCluster:Re-using existing host for {}.", node_id);
     Upstream::HostSharedPtr host = host_itr->second;
     host_map_lock_.ReaderUnlock();
     return {host};
@@ -160,11 +159,11 @@ Upstream::HostSelectionResponse RevConCluster::checkAndCreateHost(const std::str
 
   absl::WriterMutexLock wlock(&host_map_lock_);
 
-  // Create a custom address that uses the UpstreamReverseSocketInterface
+  // Create a custom address that uses the UpstreamReverseSocketInterface.
   Network::Address::InstanceConstSharedPtr host_address(
       std::make_shared<UpstreamReverseConnectionAddress>(node_id));
 
-  // Create a standard HostImpl using the custom address
+  // Create a standard HostImpl using the custom address.
   auto host_result = Upstream::HostImpl::create(
       info(), absl::StrCat(info()->name(), static_cast<std::string>(node_id)),
       std::move(host_address), nullptr /* endpoint_metadata */, nullptr /* locality_metadata */,
@@ -173,15 +172,14 @@ Upstream::HostSelectionResponse RevConCluster::checkAndCreateHost(const std::str
       0 /* priority */, envoy::config::core::v3::UNKNOWN);
 
   if (!host_result.ok()) {
-    ENVOY_LOG(error, "Failed to create HostImpl for {}: {}", node_id,
+    ENVOY_LOG(error, "RevConCluster: Failed to create HostImpl for {}: {}", node_id,
               host_result.status().ToString());
     return {nullptr};
   }
 
-  // Convert unique_ptr to shared_ptr
+  // Convert unique_ptr to shared_ptr.
   Upstream::HostSharedPtr host(std::move(host_result.value()));
-  ENVOY_LOG(trace, "Created a HostImpl {} for {} that will use UpstreamReverseSocketInterface.",
-            *host, node_id);
+  ENVOY_LOG(trace, "RevConCluster: Created a HostImpl {} for {}.", *host, node_id);
 
   host_map_[node_id] = host;
   return {host};
@@ -215,13 +213,14 @@ absl::string_view RevConCluster::getHostIdValue(const Http::RequestHeaderMap* re
     }
     ENVOY_LOG(trace, "Found {} header in request context value {}", header_name->get(),
               header_result[0]->key().getStringView());
-    // This is an implicitly untrusted header, so per the API documentation only the first
+    // This is an implicitly untrusted header, so per the API documentation only the first.
     // value is used.
     if (header_result[0]->value().empty()) {
       ENVOY_LOG(trace, "Found empty value for header {}", header_result[0]->key().getStringView());
       continue;
     }
-    ENVOY_LOG(debug, "header_result value: {} ", header_result[0]->value().getStringView());
+    ENVOY_LOG(trace, "Successfully extracted host ID from header {}: {}", header_name->get(),
+              header_result[0]->value().getStringView());
     return header_result[0]->value().getStringView();
   }
 
@@ -274,8 +273,8 @@ RevConCluster::RevConCluster(
       }
     }
   } else {
-    http_header_names_.emplace_back(Http::Headers::get().EnvoyDstNodeUUID);
-    http_header_names_.emplace_back(Http::Headers::get().EnvoyDstClusterUUID);
+    http_header_names_.emplace_back(EnvoyDstNodeUUID);
+    http_header_names_.emplace_back(EnvoyDstClusterUUID);
   }
   cleanup_timer_->enableTimer(cleanup_interval_);
 }
