@@ -84,8 +84,8 @@ Http::FilterDataStatus ReverseConnFilter::acceptReverseConnection() {
   envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet ret;
   getClusterDetailsUsingProtobuf(&node_uuid, &cluster_uuid, &tenant_uuid);
   if (node_uuid.empty()) {
-    ret.set_status(
-        envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet::REJECTED);
+    ret.set_status(envoy::extensions::bootstrap::reverse_connection_handshake::v3::
+                       ReverseConnHandshakeRet::REJECTED);
     ret.set_status_message("Failed to parse request message or required fields missing");
     decoder_callbacks_->sendLocalReply(Http::Code::BadGateway, ret.SerializeAsString(), nullptr,
                                        absl::nullopt, "");
@@ -117,8 +117,8 @@ Http::FilterDataStatus ReverseConnFilter::acceptReverseConnection() {
   }
 
   ENVOY_STREAM_LOG(info, "Accepting reverse connection", *decoder_callbacks_);
-  ret.set_status(
-      envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet::ACCEPTED);
+  ret.set_status(envoy::extensions::bootstrap::reverse_connection_handshake::v3::
+                     ReverseConnHandshakeRet::ACCEPTED);
   ENVOY_STREAM_LOG(info, "return value", *decoder_callbacks_);
 
   // Create response with explicit Content-Length
@@ -140,12 +140,12 @@ Http::FilterDataStatus ReverseConnFilter::acceptReverseConnection() {
                    *decoder_callbacks_, node_uuid, cluster_uuid);
   saveDownstreamConnection(*connection, node_uuid, cluster_uuid);
   connection->setSocketReused(true);
-  
+
   // Reset file events on the connection socket
   if (connection->getSocket()) {
     connection->getSocket()->ioHandle().resetFileEvents();
   }
-  
+
   connection->close(Network::ConnectionCloseType::NoFlush, "accepted_reverse_conn");
   decoder_callbacks_->setReverseConnForceLocalReply(false);
   return Http::FilterDataStatus::StopIterationNoBuffer;
@@ -186,7 +186,8 @@ Http::FilterHeadersStatus
 ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
                                        const std::string& remote_cluster) {
   ENVOY_LOG(debug,
-            "ReverseConnFilter: Received reverse connection info request with remote_node: {} remote_cluster: {}",
+            "ReverseConnFilter: Received reverse connection info request with remote_node: {} "
+            "remote_cluster: {}",
             remote_node, remote_cluster);
 
   // Production-ready cross-thread aggregation
@@ -203,7 +204,7 @@ ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
     // Get connection count for specific remote node/cluster using stats
     auto stats_map = upstream_extension->getCrossWorkerStatMap();
     size_t num_connections = 0;
-    
+
     if (!remote_node.empty()) {
       std::string node_stat_name = fmt::format("reverse_connections.nodes.{}", remote_node);
       // Search for the stat with scope prefix since getCrossWorkerStatMap returns full stat names
@@ -214,7 +215,8 @@ ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
         }
       }
     } else {
-      std::string cluster_stat_name = fmt::format("reverse_connections.clusters.{}", remote_cluster);
+      std::string cluster_stat_name =
+          fmt::format("reverse_connections.clusters.{}", remote_cluster);
       // Search for the stat with scope prefix since getCrossWorkerStatMap returns full stat names
       for (const auto& [stat_name, value] : stats_map) {
         if (stat_name.find(cluster_stat_name) != std::string::npos) {
@@ -223,7 +225,7 @@ ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
         }
       }
     }
-    
+
     std::string response = fmt::format("{{\"available_connections\":{}}}", num_connections);
     ENVOY_LOG(info, "handleResponderInfo response for {}: {}",
               remote_node.empty() ? remote_cluster : remote_node, response);
@@ -231,8 +233,7 @@ ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
     return Http::FilterHeadersStatus::StopIteration;
   }
 
-  ENVOY_LOG(debug,
-            "ReverseConnFilter: Using upstream socket manager to get connection stats");
+  ENVOY_LOG(debug, "ReverseConnFilter: Using upstream socket manager to get connection stats");
 
   auto [connected_nodes, accepted_connections] =
       upstream_extension->getConnectionStatsSync(std::chrono::milliseconds(1000));
@@ -242,8 +243,7 @@ ReverseConnFilter::handleResponderInfo(const std::string& remote_node,
                                                    accepted_connections.end());
   std::list<std::string> connected_nodes_list(connected_nodes.begin(), connected_nodes.end());
 
-  ENVOY_LOG(debug,
-            "Stats aggregation completed: {} connected nodes, {} accepted connections",
+  ENVOY_LOG(debug, "Stats aggregation completed: {} connected nodes, {} accepted connections",
             connected_nodes.size(), accepted_connections.size());
 
   // Create JSON response
@@ -286,9 +286,10 @@ ReverseConnFilter::handleInitiatorInfo(const std::string& remote_node,
     // For initiator, stats format includes state suffix: reverse_connections.nodes.<node>.connected
     auto stats_map = downstream_extension->getCrossWorkerStatMap();
     size_t num_connections = 0;
-    
+
     if (!remote_node.empty()) {
-      std::string node_stat_name = fmt::format("reverse_connections.host.{}.connected", remote_node);
+      std::string node_stat_name =
+          fmt::format("reverse_connections.host.{}.connected", remote_node);
       // Search for the stat with scope prefix since getCrossWorkerStatMap returns full stat names
       for (const auto& [stat_name, value] : stats_map) {
         if (stat_name.find(node_stat_name) != std::string::npos) {
@@ -297,7 +298,8 @@ ReverseConnFilter::handleInitiatorInfo(const std::string& remote_node,
         }
       }
     } else {
-      std::string cluster_stat_name = fmt::format("reverse_connections.cluster.{}.connected", remote_cluster);
+      std::string cluster_stat_name =
+          fmt::format("reverse_connections.cluster.{}.connected", remote_cluster);
       // Search for the stat with scope prefix since getCrossWorkerStatMap returns full stat names
       for (const auto& [stat_name, value] : stats_map) {
         if (stat_name.find(cluster_stat_name) != std::string::npos) {
@@ -306,7 +308,7 @@ ReverseConnFilter::handleInitiatorInfo(const std::string& remote_node,
         }
       }
     }
-    
+
     std::string response = fmt::format("{{\"available_connections\":{}}}", num_connections);
     ENVOY_LOG(info, "handleInitiatorInfo response for {}: {}",
               remote_node.empty() ? remote_cluster : remote_node, response);
@@ -325,8 +327,7 @@ ReverseConnFilter::handleInitiatorInfo(const std::string& remote_node,
                                                    accepted_connections.end());
   std::list<std::string> connected_nodes_list(connected_nodes.begin(), connected_nodes.end());
 
-  ENVOY_LOG(debug,
-            "Stats aggregation completed: {} connected nodes, {} accepted connections",
+  ENVOY_LOG(debug, "Stats aggregation completed: {} connected nodes, {} accepted connections",
             connected_nodes.size(), accepted_connections.size());
 
   // Create production-ready JSON response for multi-tenant environment
@@ -407,16 +408,15 @@ void ReverseConnFilter::saveDownstreamConnection(Network::Connection& downstream
     return;
   }
 
-  ENVOY_STREAM_LOG(debug, "Successfully duplicated file descriptor: original_fd={}, duplicated_fd={}",
-                   *decoder_callbacks_, original_socket->ioHandle().fdDoNotUse(), 
+  ENVOY_STREAM_LOG(debug,
+                   "Successfully duplicated file descriptor: original_fd={}, duplicated_fd={}",
+                   *decoder_callbacks_, original_socket->ioHandle().fdDoNotUse(),
                    duplicated_handle->fdDoNotUse());
 
   // Create a new socket with the duplicated handle
-  Network::ConnectionSocketPtr duplicated_socket = 
-      std::make_unique<Network::ConnectionSocketImpl>(
-          std::move(duplicated_handle),
-          original_socket->connectionInfoProvider().localAddress(),
-          original_socket->connectionInfoProvider().remoteAddress());
+  Network::ConnectionSocketPtr duplicated_socket = std::make_unique<Network::ConnectionSocketImpl>(
+      std::move(duplicated_handle), original_socket->connectionInfoProvider().localAddress(),
+      original_socket->connectionInfoProvider().remoteAddress());
 
   // Reset file events on the duplicated socket to clear any inherited events
   duplicated_socket->ioHandle().resetFileEvents();
@@ -425,7 +425,9 @@ void ReverseConnFilter::saveDownstreamConnection(Network::Connection& downstream
   socket_manager->addConnectionSocket(node_id, cluster_id, std::move(duplicated_socket),
                                       config_->pingInterval(), false /* rebalanced */);
 
-  ENVOY_STREAM_LOG(debug, "Successfully added duplicated socket to upstream socket manager. Original connection remains functional.",
+  ENVOY_STREAM_LOG(debug,
+                   "Successfully added duplicated socket to upstream socket manager. Original "
+                   "connection remains functional.",
                    *decoder_callbacks_);
 }
 
@@ -443,8 +445,6 @@ Http::FilterDataStatus ReverseConnFilter::decodeData(Buffer::Instance& data, boo
   }
   return Http::FilterDataStatus::Continue;
 }
-
-
 
 Http::FilterTrailersStatus ReverseConnFilter::decodeTrailers(Http::RequestTrailerMap&) {
   return Http::FilterTrailersStatus::Continue;

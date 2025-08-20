@@ -1,9 +1,9 @@
 #pragma once
 
-#include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.h"
-#include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.validate.h"
 #include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.h"
 #include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.validate.h"
+#include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.h"
+#include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.validate.h"
 #include "envoy/http/async_client.h"
 #include "envoy/http/filter.h"
 #include "envoy/upstream/cluster_manager.h"
@@ -73,6 +73,7 @@ static const char DOUBLE_CRLF[] = "\r\n\r\n";
  */
 class ReverseConnFilter : Logger::Loggable<Logger::Id::filter>, public Http::StreamDecoderFilter {
   friend class ReverseConnFilterTest;
+
 public:
   ReverseConnFilter(ReverseConnFilterConfigSharedPtr config);
   ~ReverseConnFilter();
@@ -98,7 +99,6 @@ public:
   static const std::string rc_accepted_response;
 
 private:
-
   void saveDownstreamConnection(Network::Connection& downstream_connection,
                                 const std::string& node_id, const std::string& cluster_id);
   std::string getQueryParam(const std::string& key);
@@ -119,8 +119,8 @@ private:
   Http::FilterHeadersStatus getReverseConnectionInfo();
 
   // Handle reverse connection info for responder role (uses upstream socket manager)
-  Http::FilterHeadersStatus
-  handleResponderInfo(const std::string& remote_node, const std::string& remote_cluster);
+  Http::FilterHeadersStatus handleResponderInfo(const std::string& remote_node,
+                                                const std::string& remote_cluster);
 
   // Handle reverse connection info for initiator role (uses downstream socket interface)
   Http::FilterHeadersStatus handleInitiatorInfo(const std::string& remote_node,
@@ -135,7 +135,6 @@ private:
   // out parameters.
   void getClusterDetailsUsingProtobuf(std::string* node_uuid, std::string* cluster_uuid,
                                       std::string* tenant_uuid);
-
 
   bool matchRequestPath(const absl::string_view& request_path, const std::string& api_path);
 
