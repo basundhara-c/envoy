@@ -22,10 +22,15 @@ class ReverseConnectionAddress : public Network::Address::Instance {
 public:
   // Struct to hold reverse connection configuration
   struct ReverseConnectionConfig {
+    // Source node id of initiator envoy
     std::string src_node_id;
+    // Source cluster id of initiator envoy
     std::string src_cluster_id;
+    // Source tenant id of initiator envoy
     std::string src_tenant_id;
+    // Remote cluster name of the reverse connection
     std::string remote_cluster;
+    // Connection count of the reverse connection
     uint32_t connection_count;
   };
 
@@ -53,9 +58,10 @@ public:
     auto* reverse_socket_interface = Network::socketInterface(
         "envoy.bootstrap.reverse_connection.downstream_reverse_connection_socket_interface");
     if (reverse_socket_interface) {
+      ENVOY_LOG_MISC(debug, "Reverse connection address: using reverse socket interface");
       return *reverse_socket_interface;
     }
-    // Fallback to default socket interface if reverse connection interface is not available
+    // Fallback to default socket interface if reverse connection interface is not available.
     return Network::SocketInterfaceSingleton::get();
   }
 

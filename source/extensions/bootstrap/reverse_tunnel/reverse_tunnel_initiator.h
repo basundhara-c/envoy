@@ -49,6 +49,7 @@ class RCConnectionWrapper : public Network::ConnectionCallbacks,
                             public Event::DeferredDeletable,
                             public Logger::Loggable<Logger::Id::main> {
   friend class SimpleConnReadFilterTest;
+
 public:
   /**
    * Constructor for RCConnectionWrapper.
@@ -118,7 +119,8 @@ public:
 
 private:
   /**
-   * Simplified read filter for HTTP fallback during gRPC migration.
+   * Simplified read filter for reading HTTP replies sent by upstream envoy
+   * during reverse connection handshake.
    */
   struct SimpleConnReadFilter : public Network::ReadFilterBaseImpl {
     SimpleConnReadFilter(RCConnectionWrapper* parent) : parent_(parent) {}
@@ -129,6 +131,7 @@ private:
   };
 
   ReverseConnectionIOHandle& parent_;
+  // The connection to the upstream envoy instance.
   Network::ClientConnectionPtr connection_;
   Upstream::HostDescriptionConstSharedPtr host_;
   const std::string cluster_name_;
@@ -140,10 +143,7 @@ static constexpr absl::string_view kCrlf = "\r\n";
 static constexpr absl::string_view kDoubleCrlf = "\r\n\r\n";
 
 // Connection timing constants.
-static constexpr uint32_t kDefaultReconnectIntervalMs = 5000; // 5 seconds.
 static constexpr uint32_t kDefaultMaxReconnectAttempts = 10;
-static constexpr uint32_t kDefaultHealthCheckIntervalMs = 30000; // 30 seconds.
-static constexpr uint32_t kDefaultConnectionTimeoutMs = 10000;   // 10 seconds.
 } // namespace
 
 /**
@@ -166,16 +166,14 @@ enum class ReverseConnectionState {
 struct RemoteClusterConnectionConfig {
   std::string cluster_name;          // Name of the remote cluster.
   uint32_t reverse_connection_count; // Number of reverse connections to maintain per host.
-  uint32_t reconnect_interval_ms;    // Interval between reconnection attempts in milliseconds.
-  uint32_t max_reconnect_attempts;   // Maximum number of reconnection attempts.
-  bool enable_health_check;          // Whether to enable health checks for this cluster.
+  // TODO(basundhara-c): Implement retry logic using max_reconnect_attempts for connections to this
+  // cluster. This is the max reconnection attempts made for a cluster when the initial reverse
+  // connection attempt fails.
+  uint32_t max_reconnect_attempts; // Maximum number of reconnection attempts.
 
   RemoteClusterConnectionConfig(const std::string& name, uint32_t count,
-                                uint32_t reconnect_ms = kDefaultReconnectIntervalMs,
-                                uint32_t max_attempts = kDefaultMaxReconnectAttempts,
-                                bool health_check = true)
-      : cluster_name(name), reverse_connection_count(count), reconnect_interval_ms(reconnect_ms),
-        max_reconnect_attempts(max_attempts), enable_health_check(health_check) {}
+                                uint32_t max_attempts = kDefaultMaxReconnectAttempts)
+      : cluster_name(name), reverse_connection_count(count), max_reconnect_attempts(max_attempts) {}
 };
 
 /**
@@ -185,35 +183,41 @@ struct ReverseConnectionSocketConfig {
   std::string src_cluster_id; // Cluster identifier of local envoy instance.
   std::string src_node_id;    // Node identifier of local envoy instance.
   std::string src_tenant_id;  // Tenant identifier of local envoy instance.
+  // TODO(basundhara-c): Add support for multiple remote clusters using the same
+  // ReverseConnectionIOHandle. Currently, each ReverseConnectionIOHandle handles
+  // reverse connections for a single upstream cluster since a different ReverseConnectionAddress
+  // is created for different upstream clusters. Eventually, we should embed metadata for
+  // multiple remote clusters in the same ReverseConnectionAddress and therefore should be able
+  // to use a single ReverseConnectionIOHandle for multiple remote clusters.
   std::vector<RemoteClusterConnectionConfig>
-      remote_clusters;               // List of remote cluster configurations.
-  uint32_t health_check_interval_ms; // Interval for health checks in milliseconds.
-  uint32_t connection_timeout_ms;    // Connection timeout in milliseconds.
-  bool enable_metrics;               // Whether to enable metrics collection.
-  bool enable_circuit_breaker;       // Whether to enable circuit breaker functionality.
-
-  ReverseConnectionSocketConfig()
-      : health_check_interval_ms(kDefaultHealthCheckIntervalMs),
-        connection_timeout_ms(kDefaultConnectionTimeoutMs), enable_metrics(true),
-        enable_circuit_breaker(true) {}
+      remote_clusters;         // List of remote cluster configurations.
+  bool enable_circuit_breaker; // Whether to place a cluster in backoff when reverse connection
+                               // attempts fail.
+  ReverseConnectionSocketConfig() : enable_circuit_breaker(true) {}
 };
 
 /**
  * This class handles the lifecycle of reverse connections, including establishment,
  * maintenance, and cleanup of connections to remote clusters.
+ * At this point, a ReverseConnectionIOHandle is created for each upstream cluster.
+ * This is because a different ReverseConnectionAddress is created for each upstream cluster.
+ * This ReverseConnectionIOHandle initiates TCP connections to each host of the upstream cluster,
+ * and caches the IOHandle for serving requests coming from the upstream cluster.
  */
 class ReverseConnectionIOHandle : public Network::IoSocketHandleImpl,
                                   public Network::ConnectionCallbacks {
-
+  // Define friend classes for testing.
   friend class ReverseConnectionIOHandleTest;
   friend class RCConnectionWrapperTest;
+  friend class DownstreamReverseConnectionIOHandleTest;
+
 public:
   /**
    * Constructor for ReverseConnectionIOHandle.
    * @param fd the file descriptor for listener socket.
    * @param config the configuration for reverse connections.
    * @param cluster_manager the cluster manager for accessing upstream clusters.
-   * @param socket_interface reference to the parent socket interface.
+   * @param extension the extension for stats updates.
    * @param scope the stats scope for metrics collection.
    */
   ReverseConnectionIOHandle(os_fd_t fd, const ReverseConnectionSocketConfig& config,
@@ -225,8 +229,8 @@ public:
   // Network::IoHandle overrides.
   /**
    * Override of listen method for reverse connections.
-   * Initiates reverse connection establishment to configured remote clusters.
-   * @param backlog the listen backlog (unused for reverse connections).
+   * No-op for reverse connections.
+   * @param backlog the listen backlog.
    * @return SysCallIntResult with success status.
    */
   Api::SysCallIntResult listen(int backlog) override;
@@ -260,7 +264,7 @@ public:
   /**
    * Override of connect method for reverse connections.
    * For reverse connections, this is not used since we connect to the upstream clusters in
-   * listen().
+   * initializeFileEvent().
    * @param address the target address (unused for reverse connections).
    * @return SysCallIntResult with success status.
    */
@@ -273,14 +277,14 @@ public:
   Api::IoCallUint64Result close() override;
 
   /**
-   * Override of initializeFileEvent to defer work to worker thread.
+   * Triggers the reverse connection workflow.
    * @param dispatcher the event dispatcher.
    * @param cb the file ready callback.
    * @param trigger the file trigger type.
    * @param events the events to monitor.
    */
   void initializeFileEvent(Event::Dispatcher& dispatcher, Event::FileReadyCb cb,
-                          Event::FileTriggerType trigger, uint32_t events) override;
+                           Event::FileTriggerType trigger, uint32_t events) override;
 
   // Network::ConnectionCallbacks.
   /**
@@ -301,12 +305,6 @@ public:
   void onBelowWriteBufferLowWatermark() override {}
 
   /**
-   * Check if trigger mechanism is ready for accepting connections.
-   * @return true if the trigger mechanism is initialized and ready.
-   */
-  bool isTriggerReady() const;
-
-  /**
    * Get the file descriptor for the pipe monitor used to wake up accept().
    * @return the file descriptor for the pipe monitor
    */
@@ -314,7 +312,9 @@ public:
 
   // Callbacks from RCConnectionWrapper.
   /**
-   * Called when a reverse connection handshake completes.
+   * Called when a reverse connection handshake completes. This method wakes up accept() if the
+   * reverse connection handshake was successful. If not, it performs necessary cleanup and triggers
+   * backoff for the host.
    * @param error error message if the handshake failed, empty string if successful.
    * @param wrapper pointer to the connection wrapper that wraps over the established connection.
    * @param closed whether the connection was closed during handshake.
@@ -332,7 +332,7 @@ public:
                                      const std::string& cluster_name);
 
   /**
-   * Track a connection failure for a specific host and cluster and apply backoff logic.
+   * Track a connection failure for a specific host and cluster and trigger backoff logic.
    * @param host_address the address of the host that failed.
    * @param cluster_name the name of the cluster the host belongs to.
    */
@@ -357,7 +357,7 @@ public:
   /**
    * Update state-specific gauge using switch case logic (combined increment/decrement).
    * @param host_address the address of the host
-   * @param cluster_name the name of the cluster  
+   * @param cluster_name the name of the cluster
    * @param state the connection state to update
    * @param increment whether to increment (true) or decrement (false) the gauge
    */
@@ -374,7 +374,8 @@ public:
                              const std::string& connection_key);
 
   /**
-   * Handle downstream connection closure and trigger re-initiation.
+   * Handle downstream connection closure and update internal maps so that the next
+   * maintenance cycle re-initiates the connection.
    * @param connection_key the unique key identifying the closed connection.
    */
   void onDownstreamConnectionClosed(const std::string& connection_key);
@@ -392,14 +393,13 @@ public:
   ReverseTunnelInitiatorExtension* getDownstreamExtension() const;
 
 private:
-  
   /**
    * @return reference to the thread-local dispatcher
    */
   Event::Dispatcher& getThreadLocalDispatcher() const;
 
   /**
-   * Check if thread-local dispatcher is available (not destroyed during shutdown)
+   * Check if thread-local dispatcher is available.
    * @return true if dispatcher is available and safe to use
    */
   bool isThreadLocalDispatcherAvailable() const;
@@ -410,7 +410,6 @@ private:
   void createTriggerMechanism();
 
   // Functions to maintain connections to remote clusters.
-
   /**
    * Maintain reverse connections for all configured clusters.
    * Initiates and maintains the required number of connections to each remote cluster.
@@ -475,21 +474,19 @@ private:
    * Contains all information needed to track and manage connections to a specific host.
    */
   struct HostConnectionInfo {
-    std::string host_address;                         // Host address
-    std::string cluster_name;                         // Cluster to which host belongs
-    absl::flat_hash_set<std::string> connection_keys; // Connection keys for stats tracking
-    uint32_t target_connection_count;                 // Target connection count for the host
-    uint32_t failure_count{0};                        // Number of consecutive failures
-    std::chrono::steady_clock::time_point last_failure_time{
-        std::chrono::steady_clock::now()}; // Time of last failure
-    std::chrono::steady_clock::time_point backoff_until{
-        std::chrono::steady_clock::now()}; // Backoff end time
+    std::string host_address;                                // Host address
+    std::string cluster_name;                                // Cluster to which host belongs
+    absl::flat_hash_set<std::string> connection_keys;        // Connection keys for stats tracking
+    uint32_t target_connection_count;                        // Target connection count for the host
+    uint32_t failure_count{0};                               // Number of consecutive failures
+    std::chrono::steady_clock::time_point last_failure_time; // NO_CHECK_FORMAT(real_time)
+    std::chrono::steady_clock::time_point backoff_until;     // NO_CHECK_FORMAT(real_time)
     absl::flat_hash_map<std::string, ReverseConnectionState>
         connection_states; // State tracking per connection
   };
 
   // Map from host address to connection info.
-  std::unordered_map<std::string, HostConnectionInfo> host_to_conn_info_map_;
+  absl::flat_hash_map<std::string, HostConnectionInfo> host_to_conn_info_map_;
   // Map from cluster name to set of resolved hosts
   absl::flat_hash_map<std::string, absl::flat_hash_set<std::string>> cluster_to_resolved_hosts_map_;
 
@@ -502,7 +499,7 @@ private:
   std::vector<std::unique_ptr<RCConnectionWrapper>>
       connection_wrappers_; // Active connection wrappers
   // Mapping from wrapper to host. This designates the number of successful connections to a host.
-  std::unordered_map<RCConnectionWrapper*, std::string> conn_wrapper_to_host_map_;
+  absl::flat_hash_map<RCConnectionWrapper*, std::string> conn_wrapper_to_host_map_;
 
   // Simple pipe-based trigger mechanism to wake up accept() when a connection is established.
   // Inlined directly for simplicity and reduced test coverage requirements.
@@ -514,17 +511,14 @@ private:
   // to determine the connection that got established last.
   std::queue<Envoy::Network::ClientConnectionPtr> established_connections_;
 
-  // Socket cache to prevent socket objects from going out of scope
-  // Maps connection key to socket object.
-  // Socket cache removed - sockets are now managed via RAII in DownstreamReverseConnectionIOHandle
-
   // Single retry timer for all clusters
   Event::TimerPtr rev_conn_retry_timer_;
 
-  bool is_reverse_conn_started_{false}; // Whether reverse connections have been started on worker thread
+  bool is_reverse_conn_started_{
+      false}; // Whether reverse connections have been started on worker thread
   Event::Dispatcher* worker_dispatcher_{nullptr}; // Dispatcher for the worker thread
 
-  // Store original socket FD for cleanup
+  // Store original socket FD for cleanup.
   os_fd_t original_socket_fd_{-1};
 };
 
@@ -555,14 +549,13 @@ private:
 /**
  * Socket interface that creates reverse connection sockets.
  * This class implements the SocketInterface interface to provide reverse connection
- * functionality for downstream connections. It manages the establishment and maintenance
- * of reverse TCP connections to remote clusters.
+ * functionality for downstream connections.
  */
 class ReverseTunnelInitiator : public Envoy::Network::SocketInterfaceBase,
                                public Envoy::Logger::Loggable<Envoy::Logger::Id::connection> {
   // Friend class for testing
   friend class ReverseTunnelInitiatorTest;
-  
+
 public:
   ReverseTunnelInitiator(Server::Configuration::ServerFactoryContext& context);
 
@@ -613,10 +606,6 @@ public:
                                 Envoy::Network::Address::IpVersion version,
                                 const ReverseConnectionSocketConfig& config) const;
 
-  // Socket interface functionality only - factory methods moved to ReverseTunnelInitiatorFactory
-
-
-
   /**
    * Get the extension instance for accessing cross-thread aggregation capabilities.
    * @return pointer to the extension, or nullptr if not available
@@ -624,14 +613,14 @@ public:
   ReverseTunnelInitiatorExtension* getExtension() const { return extension_; }
 
   // BootstrapExtensionFactory implementation
-  Server::BootstrapExtensionPtr createBootstrapExtension(
-      const Protobuf::Message& config,
-      Server::Configuration::ServerFactoryContext& context) override;
-  
+  Server::BootstrapExtensionPtr
+  createBootstrapExtension(const Protobuf::Message& config,
+                           Server::Configuration::ServerFactoryContext& context) override;
+
   ProtobufTypes::MessagePtr createEmptyConfigProto() override;
-  
-  std::string name() const override { 
-    return "envoy.bootstrap.reverse_connection.downstream_reverse_connection_socket_interface"; 
+
+  std::string name() const override {
+    return "envoy.bootstrap.reverse_connection.downstream_reverse_connection_socket_interface";
   }
 
   ReverseTunnelInitiatorExtension* extension_;
@@ -649,7 +638,7 @@ class ReverseTunnelInitiatorExtension : public Server::BootstrapExtension,
                                         public Logger::Loggable<Logger::Id::connection> {
   // Friend class for testing
   friend class ReverseTunnelInitiatorExtensionTest;
-  
+
 public:
   ReverseTunnelInitiatorExtension(
       Server::Configuration::ServerFactoryContext& context,
@@ -665,9 +654,10 @@ public:
   DownstreamSocketThreadLocal* getLocalRegistry() const;
 
   /**
-   * Update connection stats for reverse connections.
+   * Update all connection stats for reverse connections. This updates the cross-worker stats
+   * as well as the per-worker stats.
    * @param node_id the node identifier for the connection
-   * @param cluster_id the cluster identifier for the connection  
+   * @param cluster_id the cluster identifier for the connection
    * @param state_suffix the state suffix (e.g., "connecting", "connected", "failed")
    * @param increment whether to increment (true) or decrement (false) the connection count
    */
@@ -676,7 +666,7 @@ public:
 
   /**
    * Update per-worker connection stats for debugging purposes.
-   * Creates worker-specific stats "reverse_connections.{worker_name}.node.{node_id}.{state_suffix}".
+   * Creates worker-specific stats
    * @param node_id the node identifier for the connection
    * @param cluster_id the cluster identifier for the connection
    * @param state_suffix the state suffix for the connection
@@ -692,7 +682,7 @@ public:
   absl::flat_hash_map<std::string, uint64_t> getPerWorkerStatMap();
 
   /**
-   * Get cross-worker stat map across all dispatchers.
+   * Get cross-worker stat map across all workers.
    * @return map of stat names to values across all worker threads
    */
   absl::flat_hash_map<std::string, uint64_t> getCrossWorkerStatMap();
@@ -702,7 +692,7 @@ public:
    * @param timeout_ms timeout for the operation
    * @return pair of vectors containing connected nodes and accepted connections
    */
-  std::pair<std::vector<std::string>, std::vector<std::string>> 
+  std::pair<std::vector<std::string>, std::vector<std::string>>
   getConnectionStatsSync(std::chrono::milliseconds timeout_ms);
 
   /**
@@ -713,11 +703,12 @@ public:
 
   /**
    * Test-only method to set the thread local slot for testing purposes.
-   * This allows tests to inject a custom thread local registry without
-   * requiring friend class access.
+   * This allows tests to inject a custom thread local registry and is used
+   * in unit tests to simulate different worker threads.
    * @param slot the thread local slot to set
    */
-  void setTestOnlyTLSRegistry(std::unique_ptr<ThreadLocal::TypedSlot<DownstreamSocketThreadLocal>> slot) {
+  void setTestOnlyTLSRegistry(
+      std::unique_ptr<ThreadLocal::TypedSlot<DownstreamSocketThreadLocal>> slot) {
     tls_slot_ = std::move(slot);
   }
 
@@ -736,9 +727,8 @@ private:
  */
 class ReverseConnectionLoadBalancerContext : public Upstream::LoadBalancerContextBase {
 public:
-  explicit ReverseConnectionLoadBalancerContext(const std::string& host_to_select) {
-    host_to_select_ = std::make_pair(host_to_select, false);
-  }
+  explicit ReverseConnectionLoadBalancerContext(const std::string& host_to_select)
+      : host_string_(host_to_select), host_to_select_(host_string_, false) {}
 
   /**
    * @return optional OverrideHost specifying the host to initiate reverse connection to.
@@ -748,7 +738,43 @@ public:
   }
 
 private:
+  // Own the string data. This is to prevent use after free when the host_to_select
+  // is destroyed.
+  std::string host_string_;
   OverrideHost host_to_select_;
+};
+
+/**
+ * Custom IoHandle for downstream reverse connections that owns a ConnectionSocket.
+ * This class is used internally by ReverseConnectionIOHandle to manage the lifecycle
+ * of accepted downstream connections.
+ */
+class DownstreamReverseConnectionIOHandle : public Network::IoSocketHandleImpl {
+public:
+  /**
+   * Constructor that takes ownership of the socket and stores parent pointer and connection key.
+   */
+  DownstreamReverseConnectionIOHandle(Network::ConnectionSocketPtr socket,
+                                      ReverseConnectionIOHandle* parent,
+                                      const std::string& connection_key);
+
+  ~DownstreamReverseConnectionIOHandle() override;
+
+  // Network::IoHandle overrides
+  Api::IoCallUint64Result close() override;
+
+  /**
+   * Get the owned socket for read-only access.
+   */
+  const Network::ConnectionSocket& getSocket() const { return *owned_socket_; }
+
+private:
+  // The socket that this IOHandle owns and manages lifetime for
+  Network::ConnectionSocketPtr owned_socket_;
+  // Pointer to parent ReverseConnectionIOHandle for connection lifecycle management
+  ReverseConnectionIOHandle* parent_;
+  // Connection key for tracking this specific connection
+  std::string connection_key_;
 };
 
 } // namespace ReverseConnection
