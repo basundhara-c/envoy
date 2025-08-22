@@ -1,6 +1,6 @@
 #include "envoy/common/optref.h"
 #include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.h"
-#include "envoy/extensions/bootstrap/reverse_connection_socket_interface/v3/upstream_reverse_connection_socket_interface.pb.h"
+#include "envoy/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/v3/upstream_reverse_connection_socket_interface.pb.h"
 #include "envoy/network/connection.h"
 
 #include "source/common/buffer/buffer_impl.h"
@@ -76,8 +76,8 @@ protected:
         *upstream_socket_interface_, context_, upstream_config_);
 
     // Set up the extension in the global socket interface registry
-    auto* registered_upstream_interface = Network::socketInterface(
-        "envoy.bootstrap.reverse_connection.upstream_reverse_connection_socket_interface");
+    auto* registered_upstream_interface =
+        Network::socketInterface("envoy.bootstrap.reverse_tunnel.upstream_socket_interface");
     if (registered_upstream_interface) {
       auto* registered_acceptor = dynamic_cast<ReverseConnection::ReverseTunnelAcceptor*>(
           const_cast<Network::SocketInterface*>(registered_upstream_interface));
@@ -97,8 +97,8 @@ protected:
         context_, downstream_config_);
 
     // Set up the extension in the global socket interface registry
-    auto* registered_downstream_interface = Network::socketInterface(
-        "envoy.bootstrap.reverse_connection.downstream_reverse_connection_socket_interface");
+    auto* registered_downstream_interface =
+        Network::socketInterface("envoy.bootstrap.reverse_tunnel.downstream_socket_interface");
     if (registered_downstream_interface) {
       auto* registered_initiator = dynamic_cast<ReverseConnection::ReverseTunnelInitiator*>(
           const_cast<Network::SocketInterface*>(registered_downstream_interface));
@@ -331,9 +331,9 @@ protected:
   std::unique_ptr<ReverseConnection::ReverseTunnelInitiatorExtension> downstream_extension_;
 
   // Config for reverse connection socket interface
-  envoy::extensions::bootstrap::reverse_connection_socket_interface::v3::
+  envoy::extensions::bootstrap::reverse_tunnel::upstream_socket_interface::v3::
       UpstreamReverseConnectionSocketInterface upstream_config_;
-  envoy::extensions::bootstrap::reverse_connection_socket_interface::v3::
+  envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::v3::
       DownstreamReverseConnectionSocketInterface downstream_config_;
 
   // Set debug logging for this test

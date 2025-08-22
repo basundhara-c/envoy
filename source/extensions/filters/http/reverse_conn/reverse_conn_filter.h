@@ -14,8 +14,10 @@
 #include "source/common/http/utility.h"
 #include "source/common/network/filter_impl.h"
 #include "source/common/protobuf/protobuf.h"
-#include "source/extensions/bootstrap/reverse_tunnel/reverse_tunnel_acceptor.h"
 #include "source/extensions/bootstrap/reverse_tunnel/reverse_tunnel_initiator.h"
+#include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/reverse_tunnel_acceptor.h"
+#include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/reverse_tunnel_acceptor_extension.h"
+#include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/upstream_socket_manager.h"
 
 #include "absl/types/optional.h"
 
@@ -140,8 +142,8 @@ private:
 
   // Get the upstream socket manager from the thread-local registry
   ReverseConnection::UpstreamSocketManager* getUpstreamSocketManager() {
-    auto* upstream_interface = Network::socketInterface(
-        "envoy.bootstrap.reverse_connection.upstream_reverse_connection_socket_interface");
+    auto* upstream_interface =
+        Network::socketInterface("envoy.bootstrap.reverse_tunnel.upstream_socket_interface");
     if (!upstream_interface) {
       ENVOY_LOG(debug, "Upstream reverse socket interface not found");
       return nullptr;
@@ -165,8 +167,8 @@ private:
 
   // Get the downstream socket interface (for initiator role)
   const ReverseConnection::ReverseTunnelInitiator* getDownstreamSocketInterface() {
-    auto* downstream_interface = Network::socketInterface(
-        "envoy.bootstrap.reverse_connection.downstream_reverse_connection_socket_interface");
+    auto* downstream_interface =
+        Network::socketInterface("envoy.bootstrap.reverse_tunnel.downstream_socket_interface");
     if (!downstream_interface) {
       ENVOY_LOG(debug, "Downstream reverse socket interface not found");
       return nullptr;
@@ -184,8 +186,8 @@ private:
 
   // Get the upstream socket interface extension for production cross-thread aggregation
   ReverseConnection::ReverseTunnelAcceptorExtension* getUpstreamSocketInterfaceExtension() {
-    auto* upstream_interface = Network::socketInterface(
-        "envoy.bootstrap.reverse_connection.upstream_reverse_connection_socket_interface");
+    auto* upstream_interface =
+        Network::socketInterface("envoy.bootstrap.reverse_tunnel.upstream_socket_interface");
     if (!upstream_interface) {
       ENVOY_LOG(debug, "Upstream reverse socket interface not found");
       return nullptr;
@@ -204,8 +206,8 @@ private:
 
   // Get the downstream socket interface extension for production cross-thread aggregation
   ReverseConnection::ReverseTunnelInitiatorExtension* getDownstreamSocketInterfaceExtension() {
-    auto* downstream_interface = Network::socketInterface(
-        "envoy.bootstrap.reverse_connection.downstream_reverse_connection_socket_interface");
+    auto* downstream_interface =
+        Network::socketInterface("envoy.bootstrap.reverse_tunnel.downstream_socket_interface");
     if (!downstream_interface) {
       ENVOY_LOG(debug, "Downstream reverse socket interface not found");
       return nullptr;

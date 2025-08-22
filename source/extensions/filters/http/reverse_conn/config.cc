@@ -13,8 +13,7 @@ namespace ReverseConn {
 
 Http::FilterFactoryCb ReverseConnFilterConfigFactory::createFilterFactoryFromProtoTyped(
     const envoy::extensions::filters::http::reverse_conn::v3::ReverseConn& proto_config,
-    const std::string&, Server::Configuration::FactoryContext& context) {
-  (void)context;
+    const std::string&, Server::Configuration::FactoryContext&) {
   ReverseConnFilterConfigSharedPtr config =
       std::make_shared<ReverseConnFilterConfig>(ReverseConnFilterConfig(proto_config));
 
