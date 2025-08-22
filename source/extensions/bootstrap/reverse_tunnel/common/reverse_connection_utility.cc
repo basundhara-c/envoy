@@ -1,4 +1,4 @@
-#include "source/extensions/bootstrap/reverse_tunnel/reverse_connection_utility.h"
+#include "source/extensions/bootstrap/reverse_tunnel/common/reverse_connection_utility.h"
 
 #include "source/common/buffer/buffer_impl.h"
 #include "source/common/common/assert.h"
