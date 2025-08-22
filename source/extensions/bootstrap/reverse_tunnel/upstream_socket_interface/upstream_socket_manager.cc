@@ -22,9 +22,6 @@ namespace Extensions {
 namespace Bootstrap {
 namespace ReverseConnection {
 
-// Forward declaration
-class ReverseTunnelAcceptorExtension;
-
 // UpstreamSocketManager implementation
 UpstreamSocketManager::UpstreamSocketManager(Event::Dispatcher& dispatcher,
                                              ReverseTunnelAcceptorExtension* extension)

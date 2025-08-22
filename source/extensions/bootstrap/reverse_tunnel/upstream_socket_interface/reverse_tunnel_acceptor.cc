@@ -49,13 +49,16 @@ Api::SysCallIntResult UpstreamReverseConnectionIOHandle::connect(
 Api::IoCallUint64Result UpstreamReverseConnectionIOHandle::close() {
   ENVOY_LOG(debug, "reverse_tunnel: close() called for fd: {}", fd_);
 
-  // Reset the owned socket to properly close the connection
+  // Prefer letting the owned ConnectionSocket perform the actual close to avoid
+  // double-close.
   if (owned_socket_) {
     ENVOY_LOG(debug, "reverse_tunnel: releasing socket for cluster: {}", cluster_name_);
     owned_socket_.reset();
+    // Invalidate our fd so base destructor won't close again.
+    SET_SOCKET_INVALID(fd_);
+    return Api::ioCallUint64ResultNoError();
   }
-
-  // Call the parent close method
+  // If we no longer own the socket, fall back to base close.
   return IoSocketHandleImpl::close();
 }
 
@@ -108,6 +111,13 @@ ReverseTunnelAcceptor::socket(Envoy::Network::Socket::Type socket_type,
 
   // No sockets available, fallback to standard socket interface.
   ENVOY_LOG(debug, "reverse_tunnel: no available connection, falling back to standard socket");
+  // Emit a counter to aid diagnostics in NAT scenarios where direct connect will fail.
+  if (extension_) {
+    auto& scope = extension_->getStatsScope();
+    auto& counter = scope.counterFromString(
+        fmt::format("{}.fallback_no_reverse_socket", extension_->statPrefix()));
+    counter.inc();
+  }
   return Network::socketInterface(
              "envoy.extensions.network.socket_interface.default_socket_interface")
       ->socket(socket_type, addr, options);

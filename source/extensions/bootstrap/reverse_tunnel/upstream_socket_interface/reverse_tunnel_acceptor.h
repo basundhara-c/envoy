@@ -27,7 +27,6 @@ namespace Bootstrap {
 namespace ReverseConnection {
 
 // Forward declarations
-class ReverseTunnelAcceptor;
 class ReverseTunnelAcceptorExtension;
 class UpstreamSocketManager;
 

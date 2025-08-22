@@ -186,6 +186,13 @@ TEST_F(TestReverseTunnelAcceptor, SocketWithAddressNoThreadLocal) {
   auto io_handle = socket_interface_->socket(Network::Socket::Type::Stream, address, options);
   EXPECT_NE(io_handle, nullptr);
   EXPECT_EQ(dynamic_cast<UpstreamReverseConnectionIOHandle*>(io_handle.get()), nullptr);
+
+  // Verify fallback counter increments for diagnostics.
+  // Counter name is "<scope>.<stat_prefix>.fallback_no_reverse_socket".
+  auto& scope = extension_->getStatsScope();
+  auto& counter = scope.counterFromString(
+      absl::StrCat(extension_->statPrefix(), ".fallback_no_reverse_socket"));
+  EXPECT_EQ(counter.value(), 1);
 }
 
 TEST_F(TestReverseTunnelAcceptor, SocketWithAddressAndThreadLocalNoCachedSockets) {
