@@ -60,9 +60,9 @@ IoSocketHandleImpl::~IoSocketHandleImpl() {
 }
 
 Api::IoCallUint64Result IoSocketHandleImpl::close() {
-  ENVOY_LOG_MISC(error, "IoSocketHandleImpl::close() called, fd_={}, SOCKET_VALID={}", 
-            fd_, SOCKET_VALID(fd_));
-  
+  ENVOY_LOG_MISC(error, "IoSocketHandleImpl::close() called, fd_={}, SOCKET_VALID={}", fd_,
+                 SOCKET_VALID(fd_));
+
   if (file_event_) {
     ENVOY_LOG_MISC(error, "IoSocketHandleImpl::close() resetting file_event_");
     file_event_.reset();
@@ -231,7 +231,7 @@ Api::IoCallUint64Result IoSocketHandleImpl::sendmsg(const Buffer::RawSlice* slic
     const Api::SysCallSizeResult result = os_syscalls.sendmsg(fd_, &message, flags);
     if (result.return_value_ < 0 && result.errno_ == SOCKET_ERROR_INVAL) {
       ENVOY_LOG_MISC(error, fmt::format("EINVAL error. Socket is open: {}, IPv{}.", isOpen(),
-                                   self_ip->version() == Address::IpVersion::v6 ? 6 : 4));
+                                        self_ip->version() == Address::IpVersion::v6 ? 6 : 4));
     }
     return sysCallResultToIoCallResult(result);
   }
@@ -607,24 +607,27 @@ void IoSocketHandleImpl::initializeFileEvent(Event::Dispatcher& dispatcher, Even
                                              Event::FileTriggerType trigger, uint32_t events) {
   ASSERT(file_event_ == nullptr, "Attempting to initialize two `file_event_` for the same "
                                  "file descriptor. This is not allowed.");
-  
+
   // Add trace logging to identify thread
-  ENVOY_LOG_MISC(trace, "IoSocketHandleImpl::initializeFileEvent() called for fd={} on thread: {} (isThreadSafe={})",
-                 fd_, dispatcher.name(), dispatcher.isThreadSafe());
-  
+  ENVOY_LOG_MISC(
+      trace,
+      "IoSocketHandleImpl::initializeFileEvent() called for fd={} on thread: {} (isThreadSafe={})",
+      fd_, dispatcher.name(), dispatcher.isThreadSafe());
+
   // Log additional thread info
   if (dispatcher.isThreadSafe()) {
     ENVOY_LOG_MISC(trace, "initializeFileEvent: Called on MAIN thread for fd={}", fd_);
   } else {
-    ENVOY_LOG_MISC(trace, "initializeFileEvent: Called on WORKER thread '{}' for fd={}", 
+    ENVOY_LOG_MISC(trace, "initializeFileEvent: Called on WORKER thread '{}' for fd={}",
                    dispatcher.name(), fd_);
   }
-  
-  ENVOY_LOG_MISC(trace, "initializeFileEvent: Creating file event with trigger={}, events={} for fd={}",
+
+  ENVOY_LOG_MISC(trace,
+                 "initializeFileEvent: Creating file event with trigger={}, events={} for fd={}",
                  static_cast<int>(trigger), events, fd_);
-  
+
   file_event_ = dispatcher.createFileEvent(fd_, cb, trigger, events);
-  
+
   ENVOY_LOG_MISC(trace, "initializeFileEvent: File event created successfully for fd={}", fd_);
 }
 

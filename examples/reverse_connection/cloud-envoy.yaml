@@ -98,4 +98,4 @@ layered_runtime:
 bootstrap_extensions:
 - name: envoy.bootstrap.reverse_connection.upstream_reverse_connection_socket_interface
   typed_config:
-    "@type": type.googleapis.com/envoy.extensions.bootstrap.reverse_connection_socket_interface.v3.UpstreamReverseConnectionSocketInterface
+            "@type": type.googleapis.com/envoy.extensions.bootstrap.reverse_tunnel.upstream_socket_interface.v3.UpstreamReverseConnectionSocketInterface

@@ -143,7 +143,7 @@ layered_runtime:
 bootstrap_extensions:
 - name: envoy.bootstrap.reverse_connection.downstream_reverse_connection_socket_interface
   typed_config:
-    "@type": type.googleapis.com/envoy.extensions.bootstrap.reverse_connection_socket_interface.v3.DownstreamReverseConnectionSocketInterface
+      "@type": type.googleapis.com/envoy.extensions.bootstrap.reverse_tunnel.downstream_socket_interface.v3.DownstreamReverseConnectionSocketInterface
     src_cluster_id: on-prem
     src_node_id: on-prem-node
     src_tenant_id: on-prem

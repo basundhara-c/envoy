@@ -68,9 +68,9 @@ public:
     RELEASE_ASSERT(socket_ != nullptr, "socket is null.");
     return socket_;
   }
-  void setSocketReused(bool value) override { 
+  void setSocketReused(bool value) override {
     ENVOY_LOG_MISC(trace, "setSocketReused called with value={}", value);
-    reuse_socket_ = value; 
+    reuse_socket_ = value;
   }
   bool isSocketReused() override { return reuse_socket_; }
 

@@ -120,12 +120,15 @@ ConnectionImpl::ConnectionImpl(Event::Dispatcher& dispatcher, ConnectionSocketPt
 }
 
 ConnectionImpl::~ConnectionImpl() {
-  ENVOY_CONN_LOG(trace, "ConnectionImpl destructor called, socket_={}, socket_isOpen={}, delayed_close_timer_={}, reuse_socket_={}", 
-                 *this, socket_ ? "not_null" : "null", socket_ ? socket_->isOpen() : false, 
+  ENVOY_CONN_LOG(trace,
+                 "ConnectionImpl destructor called, socket_={}, socket_isOpen={}, "
+                 "delayed_close_timer_={}, reuse_socket_={}",
+                 *this, socket_ ? "not_null" : "null", socket_ ? socket_->isOpen() : false,
                  delayed_close_timer_ ? "not_null" : "null", static_cast<bool>(reuse_socket_));
 
   if (reuse_socket_) {
-    ENVOY_CONN_LOG(trace, "ConnectionImpl destructor called, reuse_socket_=true, skipping close", *this);
+    ENVOY_CONN_LOG(trace, "ConnectionImpl destructor called, reuse_socket_=true, skipping close",
+                   *this);
     return;
   }
 
@@ -348,9 +351,10 @@ void ConnectionImpl::closeThroughFilterManager(ConnectionCloseAction close_actio
 }
 
 void ConnectionImpl::closeSocket(ConnectionEvent close_type) {
-  ENVOY_CONN_LOG(trace, "closeSocket called, socket_={}, socket_isOpen={}, reuse_socket_={}", 
-                 *this, socket_ ? "not_null" : "null", socket_ ? socket_->isOpen() : false, static_cast<bool>(reuse_socket_));
-  
+  ENVOY_CONN_LOG(trace, "closeSocket called, socket_={}, socket_isOpen={}, reuse_socket_={}", *this,
+                 socket_ ? "not_null" : "null", socket_ ? socket_->isOpen() : false,
+                 static_cast<bool>(reuse_socket_));
+
   if (socket_ == nullptr || !socket_->isOpen()) {
     ENVOY_CONN_LOG(trace, "closeSocket: socket is null or not open, returning", *this);
     return;
@@ -395,7 +399,8 @@ void ConnectionImpl::closeSocket(ConnectionEvent close_type) {
   }
 
   // It is safe to call close() since there is an IO handle check.
-  ENVOY_CONN_LOG(trace, "closeSocket: about to close socket, reuse_socket_={}", *this, static_cast<bool>(reuse_socket_));
+  ENVOY_CONN_LOG(trace, "closeSocket: about to close socket, reuse_socket_={}", *this,
+                 static_cast<bool>(reuse_socket_));
   if (!reuse_socket_) {
     ENVOY_LOG_MISC(debug, "closeSocket:");
     ENVOY_CONN_LOG(trace, "closeSocket: calling socket_->close()", *this);
@@ -991,7 +996,7 @@ bool ConnectionImpl::setSocketOption(Network::SocketOptionName name, absl::Span<
       SocketOptionImpl::setSocketOption(*socket_, name, value.data(), value.size());
   if (result.return_value_ != 0) {
     ENVOY_LOG_MISC(warn, "Setting option on socket failed, errno: {}, message: {}", result.errno_,
-              errorDetails(result.errno_));
+                   errorDetails(result.errno_));
     return false;
   }
 

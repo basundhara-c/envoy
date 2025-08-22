@@ -5,7 +5,9 @@ import socketserver
 import json
 from datetime import datetime
 
+
 class BackendHandler(http.server.SimpleHTTPRequestHandler):
+
     def do_GET(self):
         # Create a response showing that the backend service is working
         response = {
@@ -14,7 +16,7 @@ class BackendHandler(http.server.SimpleHTTPRequestHandler):
             "path": self.path,
             "method": "GET"
         }
-        
+
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
         self.end_headers()
@@ -24,7 +26,7 @@ class BackendHandler(http.server.SimpleHTTPRequestHandler):
         # Handle POST requests as well
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8') if content_length > 0 else ""
-        
+
         response = {
             "message": "POST request received by on-premises backend service!",
             "timestamp": datetime.now().isoformat(),
@@ -32,15 +34,16 @@ class BackendHandler(http.server.SimpleHTTPRequestHandler):
             "method": "POST",
             "body": body
         }
-        
+
         self.send_response(200)
         self.send_header('Content-type', 'application/json')
         self.end_headers()
         self.wfile.write(json.dumps(response, indent=2).encode())
+
 
 if __name__ == "__main__":
     PORT = 7070
     with socketserver.TCPServer(("", PORT), BackendHandler) as httpd:
         print(f"Backend service running on port {PORT}")
         print(f"Visit http://localhost:{PORT}/on_prem_service to test")
-        httpd.serve_forever() 
+        httpd.serve_forever()

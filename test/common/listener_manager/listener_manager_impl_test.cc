@@ -8505,23 +8505,24 @@ INSTANTIATE_TEST_SUITE_P(Matcher, ListenerManagerImplWithDispatcherStatsTest,
 // Test address implementation for reverse connection testing
 class TestReverseConnectionAddress : public Network::Address::Instance {
 public:
-  TestReverseConnectionAddress() 
-      : address_string_("127.0.0.1:0"),  // Dummy IP address
-        logical_name_("rc://test-node:test-cluster:test-tenant@remote-cluster:1"),  // Address with the same format as reverse connection addresses
+  TestReverseConnectionAddress()
+      : address_string_("127.0.0.1:0"), // Dummy IP address
+        logical_name_(
+            "rc://test-node:test-cluster:test-tenant@remote-cluster:1"), // Address with the same
+                                                                         // format as reverse
+                                                                         // connection addresses
         ipv4_instance_(std::make_shared<Network::Address::Ipv4Instance>("127.0.0.1", 0)) {}
 
   // Network::Address::Instance
-  bool operator==(const Instance& rhs) const override { 
-    return address_string_ == rhs.asString(); 
-  }
+  bool operator==(const Instance& rhs) const override { return address_string_ == rhs.asString(); }
   Network::Address::Type type() const override { return Network::Address::Type::Ip; }
   const std::string& asString() const override { return address_string_; }
   absl::string_view asStringView() const override { return address_string_; }
   const std::string& logicalName() const override { return logical_name_; }
   const Network::Address::Ip* ip() const override { return ipv4_instance_->ip(); }
   const Network::Address::Pipe* pipe() const override { return nullptr; }
-  const Network::Address::EnvoyInternalAddress* envoyInternalAddress() const override { 
-    return nullptr; 
+  const Network::Address::EnvoyInternalAddress* envoyInternalAddress() const override {
+    return nullptr;
   }
   absl::optional<std::string> networkNamespace() const override { return absl::nullopt; }
   const sockaddr* sockAddr() const override { return ipv4_instance_->sockAddr(); }
@@ -8539,37 +8540,34 @@ private:
 
 TEST_P(ListenerManagerImplTest, ReverseConnectionAddressUsesCorrectSocketInterface) {
   auto reverse_connection_address = std::make_shared<TestReverseConnectionAddress>();
-  
+
   // Verify the address has the expected logical name format
   EXPECT_TRUE(absl::StartsWith(reverse_connection_address->logicalName(), "rc://"));
-  EXPECT_EQ(reverse_connection_address->logicalName(), "rc://test-node:test-cluster:test-tenant@remote-cluster:1");
+  EXPECT_EQ(reverse_connection_address->logicalName(),
+            "rc://test-node:test-cluster:test-tenant@remote-cluster:1");
   // Verify asString() returns the localhost address
   EXPECT_EQ(reverse_connection_address->asString(), "127.0.0.1:0");
-  
+
   // Create listener factory to test the actual implementation
   ProdListenerComponentFactory real_listener_factory(server_);
-  
+
   Network::Socket::OptionsSharedPtr options = nullptr;
   Network::SocketCreationOptions creation_options;
 
   // This should use the default socket interface returned by the address's
   // socketInterface() method.
   auto socket_result = real_listener_factory.createListenSocket(
-      reverse_connection_address, 
-      Network::Socket::Type::Stream,
-      options,
-      ListenerComponentFactory::BindType::NoBind,
-      creation_options,
-      0 /* worker_index */
+      reverse_connection_address, Network::Socket::Type::Stream, options,
+      ListenerComponentFactory::BindType::NoBind, creation_options, 0 /* worker_index */
   );
-  
+
   // The socket creation should succeed and use the address's socket interface
   EXPECT_TRUE(socket_result.ok());
   if (socket_result.ok()) {
     auto socket = socket_result.value();
     EXPECT_NE(socket, nullptr);
     // Verify the socket was created with the expected address
-    EXPECT_EQ(socket->connectionInfoProvider().localAddress()->logicalName(), 
+    EXPECT_EQ(socket->connectionInfoProvider().localAddress()->logicalName(),
               reverse_connection_address->logicalName());
   }
 }
