@@ -13,7 +13,7 @@
 #include "source/common/api/os_sys_calls_impl.h"
 #include "source/common/buffer/buffer_impl.h"
 #include "source/common/common/assert.h"
-#include "source/extensions/bootstrap/reverse_tunnel/reverse_connection_utility.h"
+#include "source/extensions/bootstrap/reverse_tunnel/common/reverse_connection_utility.h"
 
 // #include "source/common/network/io_socket_handle_impl.h"
 
