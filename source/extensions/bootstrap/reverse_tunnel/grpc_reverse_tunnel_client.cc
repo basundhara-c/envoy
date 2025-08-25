@@ -18,11 +18,11 @@ namespace Bootstrap {
 namespace ReverseConnection {
 
 GrpcReverseTunnelClient::GrpcReverseTunnelClient(
-    Upstream::ClusterManager& cluster_manager,
-    const std::string& cluster_name,
+    Upstream::ClusterManager& cluster_manager, const std::string& cluster_name,
     const envoy::service::reverse_tunnel::v3::ReverseTunnelGrpcConfig& config,
     GrpcReverseTunnelCallbacks& callbacks)
-    : cluster_manager_(cluster_manager), cluster_name_(cluster_name), config_(config), callbacks_(callbacks),
+    : cluster_manager_(cluster_manager), cluster_name_(cluster_name), config_(config),
+      callbacks_(callbacks),
       service_method_(Protobuf::DescriptorPool::generated_pool()->FindMethodByName(
           "envoy.service.reverse_tunnel.v3.ReverseTunnelHandshakeService.EstablishTunnel")) {
 
@@ -52,7 +52,8 @@ absl::Status GrpcReverseTunnelClient::createGrpcClient() {
   try {
     // Verify cluster name is provided
     if (cluster_name_.empty()) {
-      return absl::InvalidArgumentError("Cluster name cannot be empty for gRPC reverse tunnel handshake");
+      return absl::InvalidArgumentError(
+          "Cluster name cannot be empty for gRPC reverse tunnel handshake");
     }
 
     auto thread_local_cluster = cluster_manager_.getThreadLocalCluster(cluster_name_);
