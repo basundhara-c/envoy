@@ -62,12 +62,7 @@ public:
   void removeReadFilter(ReadFilterSharedPtr filter) override;
   bool initializeReadFilters() override;
 
-  ConnectionSocketPtr moveSocket() override;
-  const ConnectionSocketPtr& getSocket() const override {
-    // socket is null if it has been moved.
-    RELEASE_ASSERT(socket_ != nullptr, "socket is null.");
-    return socket_;
-  }
+  const ConnectionSocketPtr& getSocket() const override { return socket_; }
   void setSocketReused(bool value) override {
     ENVOY_LOG_MISC(trace, "setSocketReused called with value={}", value);
     reuse_socket_ = value;
