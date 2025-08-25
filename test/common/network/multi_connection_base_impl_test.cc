@@ -1211,7 +1211,7 @@ TEST_F(MultiConnectionBaseImplTest, SetSocketOptionFailedTest) {
   EXPECT_FALSE(impl_->setSocketOption(sockopt_name, sockopt_val));
 }
 
-TEST_F(MultiConnectionBaseImplTest, setSocketReused) {
+TEST_F(MultiConnectionBaseImplTest, SetSocketReused) {
   setupMultiConnectionImpl(2);
   impl_->setSocketReused(true);
 }
