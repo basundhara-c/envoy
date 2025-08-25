@@ -2,7 +2,7 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
-#include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.h"
+#include "source/extensions/bootstrap/reverse_tunnel/reverse_connection_handshake.pb.h"
 #include "envoy/extensions/bootstrap/reverse_tunnel/downstream_socket_interface/v3/downstream_reverse_connection_socket_interface.pb.h"
 #include "envoy/network/socket_interface.h"
 #include "envoy/server/factory_context.h"
