@@ -4584,33 +4584,6 @@ TEST_P(ClientConnectionWithCustomRawBufferSocketTest, TransportSocketCallbacks) 
   disconnect(false);
 }
 
-TEST_P(ConnectionImplTest, TestMoveSocket) {
-  setUpBasicConnection();
-  connect();
-
-  // Test socket reuse flag functionality.
-  EXPECT_FALSE(client_connection_->isSocketReused());
-  client_connection_->setSocketReused(true);
-  EXPECT_TRUE(client_connection_->isSocketReused());
-
-  // Test getSocket functionality.
-  const auto& socket_ref = client_connection_->getSocket();
-  EXPECT_NE(socket_ref, nullptr);
-
-  // Test moveSocket functionality.
-  auto moved_socket = client_connection_->moveSocket();
-  EXPECT_NE(moved_socket, nullptr);                                  // Ensure the socket is moved.
-  EXPECT_EQ(client_connection_->state(), Connection::State::Closed); // Connection should be closed.
-
-  // Clean up - close the moved socket.
-  moved_socket->close();
-
-  // Clean up server connection.
-  EXPECT_CALL(server_callbacks_, onEvent(ConnectionEvent::RemoteClose))
-      .WillOnce(Invoke([&](Network::ConnectionEvent) -> void { dispatcher_->exit(); }));
-  dispatcher_->run(Event::Dispatcher::RunType::Block);
-}
-
 TEST_P(ConnectionImplTest, TestSocketReuseFlagDefaultState) {
   setUpBasicConnection();
   connect();
