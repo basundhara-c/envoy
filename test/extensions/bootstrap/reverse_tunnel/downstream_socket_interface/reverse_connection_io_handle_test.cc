@@ -2441,7 +2441,7 @@ TEST_F(RCConnectionWrapperTest, ConnectHttpHandshakeSuccess) {
   EXPECT_FALSE(body.empty());
 
   // Verify the protobuf content by deserializing it.
-  envoy::extensions::bootstrap::reverse_tunnel::ReverseConnHandshakeArg arg;
+  envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeArg arg;
   bool parse_success = arg.ParseFromString(body);
   EXPECT_TRUE(parse_success);
   EXPECT_EQ(arg.tenant_uuid(), "test-tenant");
@@ -2513,7 +2513,7 @@ TEST_F(RCConnectionWrapperTest, ConnectHttpHandshakeWithHttpProxy) {
   EXPECT_FALSE(body.empty());
 
   // Verify the protobuf content by deserializing it.
-  envoy::extensions::bootstrap::reverse_tunnel::ReverseConnHandshakeArg arg;
+  envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeArg arg;
   bool parse_success = arg.ParseFromString(body);
   EXPECT_TRUE(parse_success);
   EXPECT_EQ(arg.tenant_uuid(), "test-tenant");
@@ -3213,8 +3213,8 @@ TEST_F(SimpleConnReadFilterTest, OnDataWithProtobufResponse) {
   auto filter = createFilter(wrapper.get());
 
   // Create a proper ReverseConnHandshakeRet protobuf response.
-  envoy::extensions::bootstrap::reverse_tunnel::ReverseConnHandshakeRet ret;
-  ret.set_status(envoy::extensions::bootstrap::reverse_tunnel::ReverseConnHandshakeRet::ACCEPTED);
+  envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeRet ret;
+  ret.set_status(envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeRet::ACCEPTED);
   ret.set_status_message("Connection accepted");
 
   std::string protobuf_data = ret.SerializeAsString(); // NOLINT(protobuf-use-MessageUtil-hash)
@@ -3232,8 +3232,8 @@ TEST_F(SimpleConnReadFilterTest, OnDataWithRejectedProtobufResponse) {
   auto filter = createFilter(wrapper.get());
 
   // Create a ReverseConnHandshakeRet protobuf response with REJECTED status.
-  envoy::extensions::bootstrap::reverse_tunnel::ReverseConnHandshakeRet ret;
-  ret.set_status(envoy::extensions::bootstrap::reverse_tunnel::ReverseConnHandshakeRet::REJECTED);
+  envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeRet ret;
+  ret.set_status(envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeRet::REJECTED);
   ret.set_status_message("Connection rejected by server");
 
   std::string protobuf_data = ret.SerializeAsString(); // NOLINT(protobuf-use-MessageUtil-hash)

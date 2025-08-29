@@ -28,7 +28,7 @@ envoy_cc_library(
     ],
 )
 
-envoy_cc_library(
+envoy_cc_extension(
     name = "reverse_connection_resolver_lib",
     srcs = ["reverse_connection_resolver.cc"],
     hdrs = ["reverse_connection_resolver.h"],
@@ -51,6 +51,7 @@ envoy_cc_library(
         "//envoy/thread_local:thread_local_interface",
         "//source/common/common:logger_lib",
         "//source/common/stats:symbol_table_lib",
+        ":reverse_connection_handshake_cc_proto",
         "@envoy_api//envoy/extensions/bootstrap/reverse_tunnel/downstream_socket_interface/v3:pkg_cc_proto",
     ],
 )
@@ -101,33 +102,3 @@ envoy_cc_extension(
         "//source/common/protobuf:utility_lib",
     ],
 )
-
-# envoy_cc_extension(
-#     name = "reverse_tunnel_acceptor_lib",
-#     srcs = ["reverse_tunnel_acceptor.cc"],
-#     hdrs = [
-#         "factory_base.h",
-#         "reverse_tunnel_acceptor.h",
-#     ],
-#     visibility = ["//visibility:public"],
-#     deps = [
-#         "//envoy/common:random_generator_interface",
-#         "//envoy/network:address_interface",
-#         "//envoy/network:io_handle_interface",
-#         "//envoy/network:socket_interface",
-#         "//envoy/registry",
-#         "//envoy/server:bootstrap_extension_config_interface",
-#         "//envoy/stats:stats_interface",
-#         "//envoy/stats:stats_macros",
-#         "//envoy/thread_local:thread_local_object",
-#         "//source/common/api:os_sys_calls_lib",
-#         "//source/common/common:logger_lib",
-#         "//source/common/common:random_generator_lib",
-#         "//source/common/network:address_lib",
-#         "//source/common/network:default_socket_interface_lib",
-#         "//source/common/protobuf",
-#         ":reverse_connection_utility_lib",
-#         "@envoy_api//envoy/extensions/bootstrap/reverse_connection_socket_interface/v3:pkg_cc_proto",
-#     ],
-#     alwayslink = 1,
-# )

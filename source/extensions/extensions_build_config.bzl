@@ -497,7 +497,7 @@ EXTENSIONS = {
     # Address Resolvers
     #
 
-    "envoy.resolvers.reverse_connection":               "//source/extensions/bootstrap/reverse_tunnel:reverse_connection_resolver_lib",
+    "envoy.resolvers.reverse_connection":               "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_connection_resolver_lib",
 
     #
     # Custom matchers
