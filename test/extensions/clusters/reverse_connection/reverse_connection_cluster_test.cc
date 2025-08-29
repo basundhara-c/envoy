@@ -16,7 +16,8 @@
 #include "source/common/singleton/manager_impl.h"
 #include "source/common/singleton/threadsafe_singleton.h"
 #include "source/common/upstream/upstream_impl.h"
-#include "source/extensions/bootstrap/reverse_tunnel/reverse_tunnel_acceptor.h"
+#include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/reverse_tunnel_acceptor.h"
+#include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/reverse_tunnel_acceptor_extension.h"
 #include "source/extensions/clusters/reverse_connection/reverse_connection.h"
 #include "source/extensions/transport_sockets/raw_buffer/config.h"
 #include "source/server/transport_socket_config_impl.h"
@@ -35,6 +36,9 @@
 
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+
+// Add namespace alias for convenience
+namespace BootstrapReverseConnection = Envoy::Extensions::Bootstrap::ReverseConnection;
 
 using testing::_;
 using testing::NiceMock;
@@ -276,7 +280,7 @@ public:
   // Stats and config.
   Stats::IsolatedStoreImpl stats_store_;
   Stats::ScopeSharedPtr stats_scope_;
-  envoy::extensions::bootstrap::reverse_connection_socket_interface::v3::
+  envoy::extensions::bootstrap::reverse_tunnel::upstream_socket_interface::v3::
       UpstreamReverseConnectionSocketInterface config_;
 };
 
