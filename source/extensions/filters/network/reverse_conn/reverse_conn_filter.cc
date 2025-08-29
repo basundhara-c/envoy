@@ -21,6 +21,9 @@ namespace Extensions {
 namespace NetworkFilters {
 namespace ReverseConn {
 
+// Using statement for the new proto namespace
+using ReverseConnectionHandshake = envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface;
+
 // Static constants
 const std::string ReverseConnFilter::REVERSE_CONNECTIONS_REQUEST_PATH =
     "/reverse_connections/request";
@@ -173,7 +176,7 @@ void ReverseConnFilter::extractRequestBody(GenericProxy::RequestCommonFrame& fra
 
 bool ReverseConnFilter::parseProtobufPayload(const std::string& payload, std::string& node_uuid,
                                              std::string& cluster_uuid, std::string& tenant_uuid) {
-  envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeArg arg;
+  ReverseConnectionHandshake::ReverseConnHandshakeArg arg;
 
   if (!arg.ParseFromString(payload)) {
     ENVOY_LOG(error, "ReverseConnFilter: Failed to parse protobuf from request body");
@@ -368,9 +371,8 @@ void ReverseConnFilter::processReverseConnectionRequest() {
             tenant_uuid_, cluster_uuid_, node_uuid_);
 
   // Create acceptance response
-  envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet ret;
-  ret.set_status(envoy::extensions::bootstrap::reverse_connection_handshake::v3::
-                     ReverseConnHandshakeRet::ACCEPTED);
+  ReverseConnectionHandshake::ReverseConnHandshakeRet ret;
+  ret.set_status(ReverseConnectionHandshake::ReverseConnHandshakeRet::ACCEPTED);
 
   std::string response_body = ret.SerializeAsString();
   ENVOY_LOG(info, "ReverseConnFilter: Response body length: {}, content: '{}'",

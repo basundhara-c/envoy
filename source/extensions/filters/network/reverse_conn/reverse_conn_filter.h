@@ -1,6 +1,6 @@
 #pragma once
 
-#include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.h"
+#include "source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface/reverse_connection_handshake.pb.h"
 #include "envoy/network/filter.h"
 #include "envoy/upstream/cluster_manager.h"
 
