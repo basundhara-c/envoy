@@ -1,7 +1,6 @@
 #pragma once
 
-#include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.h"
-#include "envoy/extensions/bootstrap/reverse_connection_handshake/v3/reverse_connection_handshake.pb.validate.h"
+#include "source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface/reverse_connection_handshake.pb.h"
 #include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.h"
 #include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.validate.h"
 #include "envoy/http/async_client.h"
@@ -14,7 +13,7 @@
 #include "source/common/http/utility.h"
 #include "source/common/network/filter_impl.h"
 #include "source/common/protobuf/protobuf.h"
-#include "source/extensions/bootstrap/reverse_tunnel/reverse_tunnel_initiator.h"
+#include "source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface/reverse_tunnel_initiator.h"
 #include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/reverse_tunnel_acceptor.h"
 #include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/reverse_tunnel_acceptor_extension.h"
 #include "source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/upstream_socket_manager.h"

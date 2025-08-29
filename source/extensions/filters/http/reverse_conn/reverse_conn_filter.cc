@@ -20,6 +20,9 @@ namespace Extensions {
 namespace HttpFilters {
 namespace ReverseConn {
 
+// Using statement for the new proto namespace
+namespace ReverseConnectionHandshake = envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface;
+
 const std::string ReverseConnFilter::reverse_connections_path = "/reverse_connections";
 const std::string ReverseConnFilter::reverse_connections_request_path =
     "/reverse_connections/request";
@@ -53,7 +56,7 @@ void ReverseConnFilter::getClusterDetailsUsingProtobuf(std::string* node_uuid,
                                                        std::string* cluster_uuid,
                                                        std::string* tenant_uuid) {
 
-  envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeArg arg;
+  ReverseConnectionHandshake::ReverseConnHandshakeArg arg;
   const std::string request_body = accept_rev_conn_proto_.toString();
   ENVOY_STREAM_LOG(debug, "Received protobuf request body length: {}", *decoder_callbacks_,
                    request_body.length());
@@ -80,11 +83,10 @@ void ReverseConnFilter::getClusterDetailsUsingProtobuf(std::string* node_uuid,
 Http::FilterDataStatus ReverseConnFilter::acceptReverseConnection() {
   std::string node_uuid, cluster_uuid, tenant_uuid;
 
-  envoy::extensions::bootstrap::reverse_connection_handshake::v3::ReverseConnHandshakeRet ret;
+  ReverseConnectionHandshake::ReverseConnHandshakeRet ret;
   getClusterDetailsUsingProtobuf(&node_uuid, &cluster_uuid, &tenant_uuid);
   if (node_uuid.empty()) {
-    ret.set_status(envoy::extensions::bootstrap::reverse_connection_handshake::v3::
-                       ReverseConnHandshakeRet::REJECTED);
+    ret.set_status(ReverseConnectionHandshake::ReverseConnHandshakeRet::REJECTED);
     ret.set_status_message("Failed to parse request message or required fields missing");
     decoder_callbacks_->sendLocalReply(Http::Code::BadGateway, ret.SerializeAsString(), nullptr,
                                        absl::nullopt, "");
@@ -115,8 +117,7 @@ Http::FilterDataStatus ReverseConnFilter::acceptReverseConnection() {
   }
 
   ENVOY_STREAM_LOG(info, "Accepting reverse connection", *decoder_callbacks_);
-  ret.set_status(envoy::extensions::bootstrap::reverse_connection_handshake::v3::
-                     ReverseConnHandshakeRet::ACCEPTED);
+  ret.set_status(ReverseConnectionHandshake::ReverseConnHandshakeRet::ACCEPTED);
   ENVOY_STREAM_LOG(info, "return value", *decoder_callbacks_);
 
   // Create response with explicit Content-Length
