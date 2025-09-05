@@ -21,7 +21,7 @@ namespace HttpFilters {
 namespace ReverseConn {
 
 // Using statement for the new proto namespace
-namespace ReverseConnectionHandshake = envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface;
+namespace ReverseConnectionHandshake = envoy::extensions::bootstrap::reverse_tunnel;
 
 const std::string ReverseConnFilter::reverse_connections_path = "/reverse_connections";
 const std::string ReverseConnFilter::reverse_connections_request_path =

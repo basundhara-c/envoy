@@ -37,9 +37,9 @@ envoy_cc_extension(
         "//source/common/network:connection_socket_lib",
         "//source/common/network:filter_lib",
         "//source/common/protobuf:utility_lib",
+        "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_connection_handshake_cc_proto",
         "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_tunnel_initiator_lib",
         "//source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface:reverse_tunnel_acceptor_lib",
-        "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_connection_handshake_cc_proto",
         "@envoy_api//envoy/extensions/filters/http/reverse_conn/v3:pkg_cc_proto",
     ],
 )

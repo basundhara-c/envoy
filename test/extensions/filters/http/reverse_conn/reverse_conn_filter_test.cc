@@ -2,7 +2,6 @@
 #include "envoy/extensions/bootstrap/reverse_tunnel/downstream_socket_interface/v3/downstream_reverse_connection_socket_interface.pb.h"
 #include "envoy/extensions/bootstrap/reverse_tunnel/upstream_socket_interface/v3/upstream_reverse_connection_socket_interface.pb.h"
 #include "envoy/extensions/filters/http/reverse_conn/v3/reverse_conn.pb.h"
-#include "source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface/reverse_connection_handshake.pb.h"
 #include "envoy/network/connection.h"
 
 #include "source/common/buffer/buffer_impl.h"
@@ -13,6 +12,7 @@
 #include "source/common/network/socket_interface.h"
 #include "source/common/network/socket_interface_impl.h"
 #include "source/common/protobuf/protobuf.h"
+#include "source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface/reverse_connection_handshake.pb.h"
 #include "source/extensions/filters/http/reverse_conn/reverse_conn_filter.h"
 
 #include "test/mocks/event/mocks.h"
@@ -212,7 +212,8 @@ protected:
   // Helper function to create a protobuf handshake argument
   std::string createHandshakeArg(const std::string& tenant_uuid, const std::string& cluster_uuid,
                                  const std::string& node_uuid) {
-    envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeArg arg;
+    envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::
+        ReverseConnHandshakeArg arg;
     arg.set_tenant_uuid(tenant_uuid);
     arg.set_cluster_uuid(cluster_uuid);
     arg.set_node_uuid(node_uuid);
@@ -689,10 +690,11 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionInvalidProtobufParseFailure
         EXPECT_EQ(code, Http::Code::BadGateway);
 
         // Deserialize the protobuf response to check the actual message
-        envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeRet ret;
+        envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::
+            ReverseConnHandshakeRet ret;
         EXPECT_TRUE(ret.ParseFromString(std::string(body)));
-        EXPECT_EQ(ret.status(), envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::
-                                    ReverseConnHandshakeRet::REJECTED);
+        EXPECT_EQ(ret.status(), envoy::extensions::bootstrap::reverse_tunnel::
+                                    downstream_socket_interface::ReverseConnHandshakeRet::REJECTED);
         EXPECT_EQ(ret.status_message(),
                   "Failed to parse request message or required fields missing");
       }));
@@ -727,7 +729,8 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionEmptyNodeUuid) {
   auto filter = createFilter();
 
   // Create protobuf with empty node_uuid
-  envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeArg arg;
+  envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeArg
+      arg;
   arg.set_tenant_uuid("tenant-123");
   arg.set_cluster_uuid("cluster-456");
   arg.set_node_uuid(""); // Empty node_uuid
@@ -749,10 +752,11 @@ TEST_F(ReverseConnFilterTest, AcceptReverseConnectionEmptyNodeUuid) {
         EXPECT_EQ(code, Http::Code::BadGateway);
 
         // Deserialize the protobuf response to check the actual message
-        envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::ReverseConnHandshakeRet ret;
+        envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::
+            ReverseConnHandshakeRet ret;
         EXPECT_TRUE(ret.ParseFromString(std::string(body)));
-        EXPECT_EQ(ret.status(), envoy::extensions::bootstrap::reverse_tunnel::downstream_socket_interface::
-                                    ReverseConnHandshakeRet::REJECTED);
+        EXPECT_EQ(ret.status(), envoy::extensions::bootstrap::reverse_tunnel::
+                                    downstream_socket_interface::ReverseConnHandshakeRet::REJECTED);
         EXPECT_EQ(ret.status_message(),
                   "Failed to parse request message or required fields missing");
       }));
