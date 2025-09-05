@@ -33,11 +33,10 @@ envoy_cc_library(
         "//source/common/common:minimal_logger_lib",
         "//source/common/network:filter_impl_lib",
         "//source/common/protobuf:protobuf_lib",
-        "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_connection_handshake_cc_proto",
         "//source/extensions/bootstrap/reverse_tunnel:reverse_tunnel_acceptor_lib",
+        "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_connection_handshake_cc_proto",
         "//source/extensions/filters/network/generic_proxy/interface:filter_lib",
         "//source/extensions/filters/network/generic_proxy/interface:stream_lib",
         "//source/extensions/filters/network/reverse_conn/v3:reverse_conn_proto",
-        "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_connection_handshake_cc_proto",
     ],
 )

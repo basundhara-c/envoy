@@ -1,5 +1,3 @@
-#include "source/extensions/bootstrap/reverse_tunnel/grpc_reverse_tunnel_client.h"
-
 #include <chrono>
 #include <memory>
 
@@ -9,6 +7,7 @@
 #include "source/common/common/logger.h"
 #include "source/common/grpc/typed_async_client.h"
 #include "source/common/protobuf/utility.h"
+#include "source/extensions/bootstrap/reverse_tunnel/grpc_reverse_tunnel_client.h"
 
 #include "absl/strings/str_cat.h"
 

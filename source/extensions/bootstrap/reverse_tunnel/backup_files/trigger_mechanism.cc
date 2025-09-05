@@ -1,11 +1,10 @@
-#include "source/extensions/bootstrap/reverse_tunnel/trigger_mechanism.h"
-
 #include <fcntl.h>
 
 #include <cerrno>
 #include <cstring>
 
 #include "source/common/common/assert.h"
+#include "source/extensions/bootstrap/reverse_tunnel/trigger_mechanism.h"
 
 namespace Envoy {
 namespace Extensions {
