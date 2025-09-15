@@ -1,0 +1,16 @@
+# Simple nginx configuration for backend service
+# This simulates the on-prem-service that would normally run in Docker
+server {
+    listen 8080;
+    server_name localhost;
+    
+    location /on_prem_service {
+        add_header Content-Type text/plain;
+        return 200 "Hello from on-prem service! This is a test response from the backend service running on port 8080.\n";
+    }
+    
+    location /health {
+        add_header Content-Type text/plain;
+        return 200 "OK\n";
+    }
+}

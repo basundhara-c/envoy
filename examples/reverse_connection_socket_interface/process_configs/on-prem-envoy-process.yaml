@@ -65,7 +65,7 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
-    # Initiates reverse connections to cloud using custom resolver
+    # Initiates reverse connections to cloud using custom resolver AND gRPC handshake
     - name: reverse_conn_listener
       listener_filters_timeout: 0s
       listener_filters:
@@ -73,13 +73,13 @@ static_resources:
         - name: envoy.filters.listener.reverse_connection
           typed_config:
             "@type": type.googleapis.com/envoy.extensions.filters.listener.reverse_connection.v3.ReverseConnection
-            ping_wait_timeout: 10
+            ping_wait_timeout: 120
       # Use custom address with reverse connection metadata encoded in URL format
       address:
         socket_address:
           # This encodes: src_node_id=on-prem-node, src_cluster_id=on-prem, src_tenant_id=on-prem
-          # and remote clusters: cloud with 1 connection
-          address: "rc://on-prem-node:on-prem:on-prem@cloud:1"
+          # and remote clusters: cloud with 10 connections (gRPC will be used automatically from bootstrap config)
+          address: "rc://on-prem-node:on-prem:on-prem@cloud:10"
           port_value: 0
           # Use custom resolver that can parse reverse connection metadata
           resolver_name: "envoy.resolvers.reverse_connection"
@@ -104,11 +104,17 @@ static_resources:
                     typed_config:
                       "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
 
-  # Cluster designating cloud-envoy
+  # Cluster designating cloud-envoy (must support HTTP/2 for gRPC)
   clusters:
     - name: cloud
-      type: STATIC
+      type: STRICT_DNS
       connect_timeout: 30s
+      # Enable HTTP/2 for gRPC support
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
       load_assignment:
         cluster_name: cloud
         endpoints:
@@ -116,9 +122,8 @@ static_resources:
           - endpoint:
               address:
                 socket_address:
-                  address: 172.20.0.30 # Static IP of cloud-envoy from docker-compose
-                  port_value: 9000   # Port where cloud-envoy's rev_conn_api_listener listens
-                  resolver_name: "envoy.resolvers.reverse_connection_target_host"
+                  address: localhost  # Changed from cloud-envoy for process mode
+                  port_value: 9001   # Cloud envoy process port
 
     # Backend HTTP service behind onprem which
     # we will access via reverse connections
@@ -132,8 +137,8 @@ static_resources:
             - endpoint:
                 address:
                   socket_address:
-                    address: 172.20.0.20 # Static IP of on-prem-service from docker-compose
-                    port_value: 80
+                    address: localhost  # Changed from on-prem-service for process mode
+                    port_value: 8080   # Backend service port
 
 admin:
   access_log_path: "/dev/stdout"

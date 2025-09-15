@@ -89,6 +89,11 @@ envoy.bootstrap.reverse_tunnel.upstream_socket_interface:
   status: wip
   type_urls:
   - envoy.extensions.bootstrap.reverse_tunnel.upstream_socket_interface.v3.UpstreamReverseConnectionSocketInterface
+envoy.bootstrap.reverse_tunnel.upstream_socket_interface.acceptor:
+  categories:
+  - envoy.bootstrap
+  security_posture: unknown
+  status: wip
 envoy.clusters.reverse_connection:
   categories:
   - envoy.cluster
@@ -1550,6 +1555,16 @@ envoy.network.dns_resolver.getaddrinfo:
   type_urls:
   - envoy.extensions.network.dns_resolver.getaddrinfo.v3.GetAddrInfoDnsResolverConfig
 envoy.resolvers.reverse_connection:
+  categories:
+  - envoy.resolvers
+  security_posture: unknown
+  status: wip
+envoy.resolvers.upstream_reverse_connection:
+  categories:
+  - envoy.resolvers
+  security_posture: unknown
+  status: wip
+envoy.resolvers.reverse_connection_target_host:
   categories:
   - envoy.resolvers
   security_posture: unknown

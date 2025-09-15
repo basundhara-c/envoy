@@ -83,6 +83,7 @@ void FilterManagerImpl::onContinueReading(ActiveReadFilter* filter,
       (*entry)->initialized_ = true;
       FilterStatus status = (*entry)->filter_->onNewConnection();
       if (status == FilterStatus::StopIteration || connection_.state() != Connection::State::Open) {
+        ENVOY_LOG(debug, "FilterManagerImpl::onContinueReading: FilterStatus::StopIteration or connection_.state() != Connection::State::Open");
         return;
       }
     }
@@ -91,6 +92,7 @@ void FilterManagerImpl::onContinueReading(ActiveReadFilter* filter,
     if (read_buffer.buffer.length() > 0 || read_buffer.end_stream) {
       FilterStatus status = (*entry)->filter_->onData(read_buffer.buffer, read_buffer.end_stream);
       if (status == FilterStatus::StopIteration || connection_.state() != Connection::State::Open) {
+        ENVOY_LOG(debug, "FilterManagerImpl::onContinueReading: FilterStatus::StopIteration or connection_.state() != Connection::State::Open");
         return;
       }
     }

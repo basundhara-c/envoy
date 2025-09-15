@@ -15,17 +15,37 @@ ConnectionImplBase::ConnectionImplBase(Event::Dispatcher& dispatcher, uint64_t i
     : dispatcher_(dispatcher), id_(id) {}
 
 void ConnectionImplBase::addConnectionCallbacks(ConnectionCallbacks& cb) {
+  ENVOY_LOG_MISC(debug, "ConnectionImplBase: adding callback {} (current size: {})", 
+                static_cast<void*>(&cb), callbacks_.size());
   callbacks_.push_back(&cb);
+  ENVOY_LOG_MISC(debug, "ConnectionImplBase: callback added, new size: {}", callbacks_.size());
 }
 
 void ConnectionImplBase::removeConnectionCallbacks(ConnectionCallbacks& callbacks) {
+  ENVOY_LOG_MISC(debug, "ConnectionImplBase: iterating through callbacks, size {}", callbacks_.size());
+  
+  // Debug: Print all callbacks in the list
+  size_t i = 0;
+  for (auto& callback : callbacks_) {
+    if (callback != nullptr) {
+      ENVOY_LOG_MISC(debug, "ConnectionImplBase: callback[{}] = {} (looking for {})", 
+                    i, static_cast<void*>(callback), static_cast<void*>(&callbacks));
+    } else {
+      ENVOY_LOG_MISC(debug, "ConnectionImplBase: callback[{}] = nullptr", i);
+    }
+    ++i;
+  }
+  
   // For performance/safety reasons we just clear the callback and do not resize the list
   for (auto& callback : callbacks_) {
     if (callback == &callbacks) {
+      ENVOY_LOG_MISC(debug, "ConnectionImplBase: removing callback {}", static_cast<void*>(callback));
       callback = nullptr;
       return;
     }
   }
+
+  ENVOY_LOG_MISC(debug, "ConnectionImplBase: callback not found");
 }
 
 OptRef<const StreamInfo::StreamInfo> ConnectionImplBase::trackedStream() const {
@@ -53,6 +73,7 @@ void ConnectionImplBase::initializeDelayedCloseTimer() {
 }
 
 void ConnectionImplBase::raiseConnectionEvent(ConnectionEvent event) {
+  ENVOY_LOG_MISC(debug, "ConnectionImplBase: calling onEvent() for callback: size {}", callbacks_.size());
   for (ConnectionCallbacks* callback : callbacks_) {
     // If a previous connected callback closed the connection, don't raise any further connected
     // events. There was already recursion raising closed events. We still raise closed events
@@ -61,9 +82,8 @@ void ConnectionImplBase::raiseConnectionEvent(ConnectionEvent event) {
         state() != State::Open) {
       return;
     }
-
     if (callback != nullptr) {
-      ENVOY_LOG_MISC(debug, "ConnectionImplBase: calling onEvent()");
+      ENVOY_LOG_MISC(debug, "ConnectionImplBase: calling onEvent() on callback {}", static_cast<void*>(callback));
       callback->onEvent(event);
     }
   }

@@ -33,7 +33,10 @@ RCConnectionWrapper::~RCConnectionWrapper() {
 }
 
 void RCConnectionWrapper::onEvent(Network::ConnectionEvent event) {
-  if (event == Network::ConnectionEvent::RemoteClose) {
+  ENVOY_LOG(debug, "RCConnectionWrapper: onEvent() called: {}", static_cast<int>(event));
+  
+  // Handle both RemoteClose and LocalClose events
+  if (event == Network::ConnectionEvent::RemoteClose || event == Network::ConnectionEvent::LocalClose) {
     if (!connection_) {
       ENVOY_LOG(debug, "RCConnectionWrapper: connection is null, skipping event handling");
       return;
@@ -44,8 +47,9 @@ void RCConnectionWrapper::onEvent(Network::ConnectionEvent event) {
         connection_->connectionInfoProvider().localAddress()->asString();
     const uint64_t connectionId = connection_->id();
 
-    ENVOY_LOG(debug, "RCConnectionWrapper: connection: {}, found connection {} remote closed",
-              connectionId, connectionKey);
+    ENVOY_LOG(debug, "RCConnectionWrapper: connection: {}, found connection {} {} closed",
+              connectionId, connectionKey, 
+              event == Network::ConnectionEvent::RemoteClose ? "remote" : "local");
 
     // Don't call shutdown() here as it may cause cleanup during event processing
     // Instead, just notify parent of closure.

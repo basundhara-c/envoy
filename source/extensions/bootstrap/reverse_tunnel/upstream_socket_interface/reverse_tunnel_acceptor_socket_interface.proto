@@ -1,0 +1,8 @@
+syntax = "proto3";
+
+package envoy.extensions.bootstrap.reverse_tunnel.upstream_socket_interface;
+
+// Configuration for the reverse tunnel acceptor socket interface
+message ReverseTunnelAcceptorSocketInterface {
+  // Empty configuration for now
+}

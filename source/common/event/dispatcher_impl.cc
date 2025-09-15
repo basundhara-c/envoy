@@ -160,9 +160,10 @@ Network::ClientConnectionPtr DispatcherImpl::createClientConnection(
     const Network::ConnectionSocket::OptionsSharedPtr& options,
     const Network::TransportSocketOptionsConstSharedPtr& transport_options) {
   ASSERT(isThreadSafe());
-
+  ENVOY_LOG(trace, "DispatcherImpl::createClientConnection() address type: {}", address->addressType());
   auto* factory = Config::Utility::getFactoryByName<Network::ClientConnectionFactory>(
       std::string(address->addressType()));
+  ENVOY_LOG(trace, "DispatcherImpl::createClientConnection() factory: {}", factory->name());
 
   // The target address is usually offered by EDS and the EDS api should reject the unsupported
   // address.

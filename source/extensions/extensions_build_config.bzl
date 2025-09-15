@@ -63,6 +63,7 @@ EXTENSIONS = {
     #
     "envoy.bootstrap.reverse_tunnel.downstream_socket_interface": "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_tunnel_initiator_lib",
     "envoy.bootstrap.reverse_tunnel.upstream_socket_interface": "//source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface:reverse_tunnel_acceptor_lib",
+    "envoy.bootstrap.reverse_tunnel.upstream_socket_interface.acceptor": "//source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface:reverse_tunnel_acceptor_interface_lib",
 
     #
     # Health checkers
@@ -498,6 +499,8 @@ EXTENSIONS = {
     #
 
     "envoy.resolvers.reverse_connection":               "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_connection_resolver_lib",
+    "envoy.resolvers.upstream_reverse_connection":      "//source/extensions/bootstrap/reverse_tunnel/upstream_socket_interface:upstream_reverse_connection_resolver_lib",
+    "envoy.resolvers.reverse_connection_target_host":   "//source/extensions/bootstrap/reverse_tunnel/downstream_socket_interface:reverse_conn_target_host_resolver_lib",
 
     #
     # Custom matchers

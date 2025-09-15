@@ -25,7 +25,8 @@ services:
     extra_hosts:
       - "host.docker.internal:host-gateway"
     networks:
-      - envoy-network
+      envoy-network:
+        ipv4_address: 172.20.0.10
     depends_on:
       - xds-server
       - on-prem-service
@@ -33,7 +34,8 @@ services:
   on-prem-service:
     image: nginxdemos/hello:plain-text
     networks:
-      - envoy-network
+      envoy-network:
+        ipv4_address: 172.20.0.20
 
   cloud-envoy:
     image: debug/envoy:latest
@@ -48,8 +50,9 @@ services:
       # Egress listener
       - "8085:8085"
     networks:
-      - envoy-network
+      envoy-network:
+        ipv4_address: 172.20.0.30
 
 networks:
   envoy-network:
-    driver: bridge
+    external: true

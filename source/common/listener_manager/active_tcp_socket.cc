@@ -71,10 +71,13 @@ void ActiveTcpSocket::unlink() {
 }
 
 void ActiveTcpSocket::createListenerFilterBuffer() {
+  ENVOY_LOG(debug, "ActiveTcpSocket::createListenerFilterBuffer: creating buffer for filter with maxReadBytes={}", (*iter_)->maxReadBytes());
+  
   listener_filter_buffer_ = std::make_unique<Network::ListenerFilterBufferImpl>(
       socket_->ioHandle(), listener_.dispatcher(),
       [this](bool error) {
-        (*iter_)->onClose();
+        ENVOY_LOG(debug, "ActiveTcpSocket::createListenerFilterBuffer: close callback triggered, error={}", error);
+        // (*iter_)->onClose();
         socket_->ioHandle().close();
         if (error) {
           listener_.stats_.downstream_listener_filter_error_.inc();
@@ -84,6 +87,7 @@ void ActiveTcpSocket::createListenerFilterBuffer() {
         continueFilterChain(false);
       },
       [this](Network::ListenerFilterBufferImpl& filter_buffer) {
+        ENVOY_LOG(debug, "ActiveTcpSocket::createListenerFilterBuffer: data callback triggered");
         Network::FilterStatus status = (*iter_)->onData(filter_buffer);
         if (status == Network::FilterStatus::StopIteration) {
           if (socket_->ioHandle().isOpen()) {
@@ -107,6 +111,8 @@ void ActiveTcpSocket::createListenerFilterBuffer() {
         continueFilterChain(true);
       },
       (*iter_)->maxReadBytes() == 0, (*iter_)->maxReadBytes());
+      
+  ENVOY_LOG(debug, "ActiveTcpSocket::createListenerFilterBuffer: buffer created successfully");
 }
 
 void ActiveTcpSocket::continueFilterChain(bool success) {
@@ -136,10 +142,13 @@ void ActiveTcpSocket::continueFilterChain(bool success) {
             createListenerFilterBuffer();
           }
           if ((*iter_)->maxReadBytes() > 0) {
+            ENVOY_LOG(debug, "ActiveTcpSocket::continueFilterChain: enabling data callback for filter with maxReadBytes={}", (*iter_)->maxReadBytes());
             listener_filter_buffer_->disableOnDataCallback(false);
             // If the current filter expect more data than previous filters, then
             // increase the filter buffer's capacity.
             if (listener_filter_buffer_->capacity() < (*iter_)->maxReadBytes()) {
+              ENVOY_LOG(debug, "ActiveTcpSocket::continueFilterChain: resetting buffer capacity from {} to {}", 
+                        listener_filter_buffer_->capacity(), (*iter_)->maxReadBytes());
               listener_filter_buffer_->resetCapacity((*iter_)->maxReadBytes());
             }
             if (listener_filter_buffer_ != nullptr) {
@@ -148,9 +157,11 @@ void ActiveTcpSocket::continueFilterChain(bool success) {
               // data from the socket . Another one is the data already
               // peeked into the buffer when previous filter processing the data, then activate the
               // read event to trigger the current filter callback to process the data.
+              ENVOY_LOG(debug, "ActiveTcpSocket::continueFilterChain: activating READ file event");
               listener_filter_buffer_->activateFileEvent(Event::FileReadyType::Read);
             }
           } else {
+            ENVOY_LOG(debug, "ActiveTcpSocket::continueFilterChain: disabling data callback for filter with maxReadBytes=0");
             listener_filter_buffer_->disableOnDataCallback(true);
           }
 

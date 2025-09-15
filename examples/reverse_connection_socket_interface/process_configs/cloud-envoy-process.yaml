@@ -9,8 +9,8 @@ static_resources:
       address:
         socket_address:
           address: 0.0.0.0
-          port_value: 9000
-          # resolver_name: "envoy.resolvers.upstream_reverse_connection"
+          port_value: 9001  # Changed from 9000 to avoid conflict
+          resolver_name: "envoy.resolvers.upstream_reverse_connection"
       filter_chains:
         - filters:
             - name: envoy.http_connection_manager
@@ -89,7 +89,7 @@ admin:
   address:
     socket_address:
       address: 0.0.0.0
-      port_value: 8888
+      port_value: 8889  # Changed from 8888 to avoid conflict
 layered_runtime:
   layers:
   - name: layer

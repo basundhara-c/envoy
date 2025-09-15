@@ -407,6 +407,8 @@ private:
   // to determine the connection that got established last.
   std::queue<Envoy::Network::ClientConnectionPtr> established_connections_;
 
+  std::queue<Envoy::Network::ClientConnectionPtr> established_connections_to_close_;
+
   // Single retry timer for all clusters
   Event::TimerPtr rev_conn_retry_timer_;
 

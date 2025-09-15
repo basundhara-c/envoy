@@ -28,6 +28,18 @@ envoy_cc_library(
     ],
 )
 
+envoy_cc_library(
+    name = "reverse_conn_target_host_address_lib",
+    srcs = ["reverse_conn_target_host_address.cc"],
+    hdrs = ["reverse_conn_target_host_address.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//envoy/network:address_interface",
+        "//source/common/network:address_lib",
+        "//source/common/network:socket_interface_lib",
+    ],
+)
+
 envoy_cc_extension(
     name = "reverse_connection_resolver_lib",
     srcs = ["reverse_connection_resolver.cc"],
@@ -37,6 +49,19 @@ envoy_cc_extension(
         ":reverse_connection_address_lib",
         "//envoy/network:resolver_interface",
         "//envoy/registry",
+    ],
+)
+
+envoy_cc_extension(
+    name = "reverse_conn_target_host_resolver_lib",
+    srcs = ["reverse_conn_target_host_resolver.cc"],
+    hdrs = ["reverse_conn_target_host_resolver.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":reverse_conn_target_host_address_lib",
+        "//envoy/network:resolver_interface",
+        "//envoy/registry",
+        "//source/common/network:utility_lib",
     ],
 )
 
@@ -93,12 +118,61 @@ envoy_cc_library(
     ],
 )
 
+envoy_cc_library(
+    name = "reverse_tunnel_initiator_client_io_handle_lib",
+    srcs = ["reverse_tunnel_initiator_client_io_handle.cc"],
+    hdrs = ["reverse_tunnel_initiator_client_io_handle.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//envoy/network:io_handle_interface",
+        "//source/common/network:default_socket_interface_lib",
+    ],
+)
+
+envoy_cc_extension(
+    name = "reverse_tunnel_initiator_client_socket_interface_lib",
+    srcs = ["reverse_tunnel_initiator_client_socket_interface.cc"],
+    hdrs = ["reverse_tunnel_initiator_client_socket_interface.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":reverse_tunnel_initiator_client_io_handle_lib",
+        "//envoy/network:socket_interface",
+        "//envoy/registry",
+        "//source/common/network:socket_interface_lib",
+    ],
+)
+
+envoy_cc_library(
+    name = "reverse_client_connection_lib",
+    srcs = ["reverse_client_connection.cc"],
+    hdrs = ["reverse_client_connection.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//envoy/network:connection_interface",
+        "//source/common/network:connection_impl",
+    ],
+)
+
+envoy_cc_extension(
+    name = "reverse_client_connection_factory_lib",
+    srcs = ["reverse_client_connection_factory.cc"],
+    hdrs = ["reverse_client_connection_factory.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":reverse_client_connection_lib",
+        "//envoy/network:client_connection_factory",
+        "//envoy/registry",
+    ],
+)
+
 envoy_cc_extension(
     name = "reverse_tunnel_initiator_lib",
     srcs = ["reverse_tunnel_initiator.cc"],
     hdrs = ["reverse_tunnel_initiator.h"],
     visibility = ["//visibility:public"],
     deps = [
+        ":reverse_client_connection_factory_lib",
+        ":reverse_tunnel_initiator_client_socket_interface_lib",
         ":reverse_connection_address_lib",
         ":reverse_connection_io_handle_lib",
         ":reverse_tunnel_extension_lib",

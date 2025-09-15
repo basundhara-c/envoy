@@ -72,6 +72,11 @@ public:
   bool isHalfCloseEnabled() const override { return enable_half_close_; }
   void close(ConnectionCloseType type) final;
   void close(ConnectionCloseType type, absl::string_view details) override {
+    ENVOY_CONN_LOG(
+      debug,
+      "ConnectionImpl::close() ENTRY - this={}, type={}, connection_id={}, fd={}, socket_isOpen={}",
+      *this, static_cast<void*>(this), static_cast<int>(type), id(),
+      socket_ ? socket_->ioHandle().fdDoNotUse() : -1, socket_ ? socket_->isOpen() : false);
     if (!details.empty()) {
       setLocalCloseReason(details);
     }
@@ -185,7 +190,7 @@ protected:
   void closeConnectionImmediately() final;
   void closeThroughFilterManager(ConnectionCloseAction close_action);
 
-  void closeSocket(ConnectionEvent close_type);
+  virtual void closeSocket(ConnectionEvent close_type);
 
   void onReadBufferLowWatermark();
   void onReadBufferHighWatermark();

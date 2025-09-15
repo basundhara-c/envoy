@@ -17,9 +17,9 @@ namespace ReverseConnection {
 class ReverseConnectionIOHandle;
 
 /**
- * Custom IoHandle for downstream reverse connections that owns a ConnectionSocket.
- * This class is used internally by ReverseConnectionIOHandle to manage the lifecycle
- * of accepted downstream connections.
+ * Custom IoHandle wrapper over a reverse connection socket. The sole purpose of this
+ * IOHandle is to override the owned socket's close() and shutdown() methods to trigger
+ * re-initiation of reverse connections if the owned socket is closed.
  */
 class DownstreamReverseConnectionIOHandle : public Network::IoSocketHandleImpl {
 public:
@@ -35,6 +35,9 @@ public:
   // Network::IoHandle overrides
   Api::IoCallUint64Result close() override;
   Api::SysCallIntResult shutdown(int how) override;
+  void initializeFileEvent(Event::Dispatcher& dispatcher, Event::FileReadyCb cb,
+                          Event::FileTriggerType trigger, uint32_t events) override;
+  Api::IoCallUint64Result recv(void* buffer, size_t length, int flags) override;
 
   /**
    * Tell this IO handle to ignore close() and shutdown() calls.

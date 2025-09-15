@@ -52,6 +52,9 @@ void Filter::onClose() {
 
   ENVOY_LOG(debug, "reverse_connection: onClose: connectionKey: {} connection_used_ {}",
             connectionKey, connection_used_);
+            
+  ENVOY_LOG(debug, "reverse_connection: onClose: socket isOpen={}, fd={}", 
+            cb_->socket().isOpen(), fd());
 
   // If a connection is closed before data is received, mark the socket dead.
   if (!connection_used_) {

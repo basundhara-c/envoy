@@ -54,7 +54,9 @@ constexpr int messageTruncatedOption() {
 namespace Network {
 
 IoSocketHandleImpl::~IoSocketHandleImpl() {
+  ENVOY_LOG_MISC(error, "IoSocketHandleImpl::~IoSocketHandleImpl() called, fd_={}", fd_);
   if (SOCKET_VALID(fd_)) {
+    ENVOY_LOG_MISC(error, "IoSocketHandleImpl::~IoSocketHandleImpl() calling close()");
     IoSocketHandleImpl::close();
   }
 }
@@ -538,20 +540,26 @@ Api::IoCallUint64Result IoSocketHandleImpl::recvmmsg(RawSliceArrays& slices, uin
 }
 
 Api::IoCallUint64Result IoSocketHandleImpl::recv(void* buffer, size_t length, int flags) {
+  ENVOY_LOG_MISC(debug, "IoSocketHandleImpl::recv() called for fd={}, length={}, flags={}", fd_, length, flags);
   const Api::SysCallSizeResult result =
       Api::OsSysCallsSingleton::get().recv(fd_, buffer, length, flags);
+  ENVOY_LOG_MISC(debug, "IoSocketHandleImpl::recv() result - return_value={}, errno={}", 
+            result.return_value_, result.errno_);
   return sysCallResultToIoCallResult(result);
 }
 
 Api::SysCallIntResult IoSocketHandleImpl::bind(Address::InstanceConstSharedPtr address) {
+  ENVOY_LOG_MISC(debug, "IoSocketHandleImpl::bind() called for fd={}", fd_);
   return Api::OsSysCallsSingleton::get().bind(fd_, address->sockAddr(), address->sockAddrLen());
 }
 
 Api::SysCallIntResult IoSocketHandleImpl::listen(int backlog) {
+  ENVOY_LOG_MISC(debug, "IoSocketHandleImpl::listen() called for fd={}", fd_);
   return Api::OsSysCallsSingleton::get().listen(fd_, backlog);
 }
 
 IoHandlePtr IoSocketHandleImpl::accept(struct sockaddr* addr, socklen_t* addrlen) {
+  ENVOY_LOG_MISC(debug, "IoSocketHandleImpl::accept() called for fd={}", fd_);
   auto result = Api::OsSysCallsSingleton::get().accept(fd_, addr, addrlen);
   if (SOCKET_INVALID(result.return_value_)) {
     return nullptr;

@@ -246,7 +246,7 @@ Envoy::Network::IoHandlePtr ReverseConnectionIOHandle::accept(struct sockaddr* a
 
         // Instead of moving the socket, duplicate the file descriptor.
         const Network::ConnectionSocketPtr& original_socket = connection->getSocket();
-        if (!original_socket || !original_socket->isOpen()) {
+        if (!original_socket) {
           ENVOY_LOG(error, "Original socket is not available or not open");
           return nullptr;
         }
@@ -271,6 +271,13 @@ Envoy::Network::IoHandlePtr ReverseConnectionIOHandle::accept(struct sockaddr* a
                 original_socket->connectionInfoProvider().localAddress(),
                 original_socket->connectionInfoProvider().remoteAddress());
 
+        // Reset file events on the original socket to prevent any pending operations. The socket
+        // fd has been duplicated, so we have an independent fd. Closing the original connection
+        // will only close its fd, not affect our duplicated fd.
+        //
+        // Note: For raw TCP connections, no shutdown() is called during close, only close() on
+        // the fd, which doesn't affect the duplicated fd.
+        original_socket->ioHandle().resetFileEvents();
         // Reset file events on the duplicated socket to clear any inherited events.
         duplicated_socket->ioHandle().resetFileEvents();
 
@@ -281,16 +288,9 @@ Envoy::Network::IoHandlePtr ReverseConnectionIOHandle::accept(struct sockaddr* a
         ENVOY_LOG(debug,
                   "ReverseConnectionIOHandle: RAII IoHandle created with duplicated socket.");
 
-        // Reset file events on the original socket to prevent any pending operations. The socket
-        // fd has been duplicated, so we have an independent fd. Closing the original connection
-        // will only close its fd, not affect our duplicated fd.
-        //
-        // Note: For raw TCP connections, no shutdown() is called during close, only close() on
-        // the fd, which doesn't affect the duplicated fd.
-        original_socket->ioHandle().resetFileEvents();
-
         // Close the original connection.
-        connection->close(Network::ConnectionCloseType::NoFlush);
+        // connection->close(Network::ConnectionCloseType::NoFlush);
+        established_connections_to_close_.push(std::move(connection));
 
         ENVOY_LOG(debug, "ReverseConnectionIOHandle: returning io_handle.");
         return io_handle;
@@ -1027,6 +1027,7 @@ void ReverseConnectionIOHandle::onConnectionDone(const std::string& error,
       if (connection->getSocket()) {
         connection->getSocket()->ioHandle().resetFileEvents();
       }
+      connection->removeConnectionCallbacks(*wrapper);
       connection->close(Network::ConnectionCloseType::NoFlush);
     }
 
@@ -1053,6 +1054,8 @@ void ReverseConnectionIOHandle::onConnectionDone(const std::string& error,
 
     // Reset file events safely.
     if (connection->getSocket()) {
+      ENVOY_LOG(debug, "ReverseConnectionIOHandle: removing connection callbacks");
+      connection->removeConnectionCallbacks(*wrapper);
       connection->getSocket()->ioHandle().resetFileEvents();
     }
 

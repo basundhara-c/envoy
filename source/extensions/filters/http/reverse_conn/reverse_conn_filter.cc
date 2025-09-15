@@ -131,21 +131,21 @@ Http::FilterDataStatus ReverseConnFilter::acceptReverseConnection() {
       [&response_body](Http::ResponseHeaderMap& headers) {
         headers.setContentType("application/octet-stream");
         headers.setContentLength(response_body.length());
-        headers.setConnection("close");
+        // headers.setConnection("close");
       },
       absl::nullopt, "");
 
   ENVOY_STREAM_LOG(info, "DEBUG: About to save connection with node_uuid='{}' cluster_uuid='{}'",
                    *decoder_callbacks_, node_uuid, cluster_uuid);
   saveDownstreamConnection(*connection, node_uuid, cluster_uuid);
-  connection->setSocketReused(true);
+  // connection->setSocketReused(true);
 
   // Reset file events on the connection socket
   if (connection->getSocket()) {
     connection->getSocket()->ioHandle().resetFileEvents();
   }
 
-  connection->close(Network::ConnectionCloseType::NoFlush, "accepted_reverse_conn");
+  // connection->close(Network::ConnectionCloseType::NoFlush, "accepted_reverse_conn");
   return Http::FilterDataStatus::StopIterationNoBuffer;
 }
 
