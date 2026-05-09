@@ -9591,6 +9591,19 @@ typedef const void* envoy_dynamic_module_type_lb_module_ptr;
  */
 typedef void* envoy_dynamic_module_type_lb_context_envoy_ptr;
 
+/**
+ * envoy_dynamic_module_type_cluster_lb_scheduler_module_ptr is a raw pointer to the
+ * DynamicModuleLoadBalancerScheduler class in Envoy. The scheduler is bound to a
+ * specific per-worker DynamicModuleLoadBalancer instance and lets the module post a
+ * callback to that worker's dispatcher thread from any thread.
+ *
+ * OWNERSHIP: The allocation is done by Envoy but the module is responsible for managing the
+ * lifetime of the pointer. Notably, it must be explicitly destroyed by the module via
+ * envoy_dynamic_module_callback_cluster_lb_scheduler_delete before the LB itself is destroyed.
+ * Since its lifecycle is owned/managed by the module, this has _module_ptr suffix.
+ */
+typedef void* envoy_dynamic_module_type_cluster_lb_scheduler_module_ptr;
+
 // =============================================================================
 // Load Balancer Event Hooks
 // =============================================================================
@@ -9681,6 +9694,24 @@ void envoy_dynamic_module_on_lb_on_host_membership_update(
  * @param lb_module_ptr is the pointer to the in-module load balancer instance.
  */
 void envoy_dynamic_module_on_lb_destroy(envoy_dynamic_module_type_lb_module_ptr lb_module_ptr);
+
+/**
+ * envoy_dynamic_module_on_lb_scheduled is called on the worker thread that owns
+ * lb_module_ptr for every event posted via
+ * envoy_dynamic_module_callback_cluster_lb_scheduler_commit.
+ *
+ * This event hook is optional. If the module does not implement it, scheduler
+ * commits become no-ops on the Envoy side.
+ *
+ * Multiple commits with the same event_id may coalesce; the module must not assume
+ * one-to-one correspondence between commits and scheduled callbacks.
+ *
+ * @param lb_module_ptr is the pointer to the in-module load balancer instance whose
+ *        worker dispatcher posted this event.
+ * @param event_id is the module-defined identifier passed to the matching commit call.
+ */
+void envoy_dynamic_module_on_lb_scheduled(envoy_dynamic_module_type_lb_module_ptr lb_module_ptr,
+                                          uint64_t event_id);
 
 // =============================================================================
 // Load Balancer Callbacks
@@ -10291,6 +10322,59 @@ envoy_dynamic_module_callback_lb_config_record_histogram_value(
     envoy_dynamic_module_type_lb_config_envoy_ptr lb_config_envoy_ptr, size_t id,
     envoy_dynamic_module_type_module_buffer* label_values, size_t label_values_length,
     uint64_t value);
+
+// =============================================================================
+// Load Balancer Callbacks - Per-Worker Scheduler
+// =============================================================================
+//
+// These mirror the per-worker scheduler exposed for HTTP filters
+// (envoy_dynamic_module_callback_http_filter_scheduler_*). They let a module
+// post a callback to the worker thread that owns a specific per-worker LB
+// instance from any thread (e.g. a background task that owns a discovery
+// stream). The posted callback eventually invokes
+// envoy_dynamic_module_on_lb_scheduled on the owning worker.
+
+/**
+ * envoy_dynamic_module_callback_cluster_lb_scheduler_new creates a new scheduler bound to
+ * the given per-worker LB instance. Must be called on the worker thread that owns
+ * lb_envoy_ptr (typically from envoy_dynamic_module_on_lb_new).
+ *
+ * @param lb_envoy_ptr the per-worker LB instance, as received in
+ *        envoy_dynamic_module_on_lb_new.
+ * @return the scheduler handle, or nullptr on failure. The caller owns the handle and must
+ *         release it via envoy_dynamic_module_callback_cluster_lb_scheduler_delete before
+ *         the LB itself is destroyed.
+ */
+envoy_dynamic_module_type_cluster_lb_scheduler_module_ptr
+envoy_dynamic_module_callback_cluster_lb_scheduler_new(
+    envoy_dynamic_module_type_lb_envoy_ptr lb_envoy_ptr);
+
+/**
+ * envoy_dynamic_module_callback_cluster_lb_scheduler_commit schedules an event on the worker
+ * thread that owns the LB this scheduler was created for. Safe to call from any thread. The
+ * event eventually invokes envoy_dynamic_module_on_lb_scheduled on the owning worker.
+ *
+ * Multiple commits with the same event_id may coalesce — the module must not assume one-to-one
+ * correspondence between commits and scheduled callbacks.
+ *
+ * @param scheduler_module_ptr the scheduler created by
+ *        envoy_dynamic_module_callback_cluster_lb_scheduler_new.
+ * @param event_id a module-defined identifier delivered to on_lb_scheduled.
+ */
+void envoy_dynamic_module_callback_cluster_lb_scheduler_commit(
+    envoy_dynamic_module_type_cluster_lb_scheduler_module_ptr scheduler_module_ptr,
+    uint64_t event_id);
+
+/**
+ * envoy_dynamic_module_callback_cluster_lb_scheduler_delete releases a scheduler. After this
+ * returns, no further on_lb_scheduled callbacks will fire for this scheduler. Must be called
+ * before the LB itself is destroyed.
+ *
+ * @param scheduler_module_ptr the scheduler created by
+ *        envoy_dynamic_module_callback_cluster_lb_scheduler_new.
+ */
+void envoy_dynamic_module_callback_cluster_lb_scheduler_delete(
+    envoy_dynamic_module_type_cluster_lb_scheduler_module_ptr scheduler_module_ptr);
 
 // =============================================================================
 // Matcher Types

@@ -105,6 +105,15 @@ new_features:
   change: |
     Added ``envoy_dynamic_module_callback_is_validation_mode`` ABI callback that allows dynamic
     modules to check if the server is running in config validation mode.
+- area: dynamic_modules
+  change: |
+    Added a per-worker scheduler to the cluster load-balancing-policy dynamic module ABI:
+    ``envoy_dynamic_module_callback_cluster_lb_scheduler_new`` /
+    ``_commit`` / ``_delete`` callbacks plus the optional
+    ``envoy_dynamic_module_on_lb_scheduled`` event hook. This lets a module post a callback
+    from any thread onto the worker dispatcher that owns a specific per-worker LB instance,
+    mirroring the per-worker scheduler already exposed for HTTP filters, network filters,
+    listener filters, and UDP listener filters.
 - area: access_log
   change: |
     Supported the singleton stats scope in the :ref:`stats access logger <envoy_v3_api_msg_extensions.access_loggers.stats.v3.Config>`.

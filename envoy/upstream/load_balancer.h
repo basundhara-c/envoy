@@ -16,6 +16,10 @@
 #include "xds/data/orca/v3/orca_load_report.pb.h"
 
 namespace Envoy {
+namespace Event {
+class Dispatcher;
+} // namespace Event
+
 namespace Server {
 namespace Configuration {
 class ServerFactoryContext;
@@ -269,6 +273,10 @@ struct LoadBalancerParams {
   const PrioritySet& priority_set;
   // The worker local priority set of the local cluster.
   const PrioritySet* local_priority_set{};
+  // The dispatcher of the worker thread that will own the created load balancer. Load balancer
+  // implementations may capture this to schedule callbacks back onto the worker (e.g. dynamic
+  // module load balancers expose a per-worker scheduler that posts here).
+  Event::Dispatcher* dispatcher{};
 };
 
 /**

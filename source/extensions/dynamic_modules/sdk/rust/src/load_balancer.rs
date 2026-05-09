@@ -184,6 +184,62 @@ pub trait EnvoyLoadBalancer {
   /// `strict` is true, the load balancer should return no host if the override is not valid.
   /// Only valid during choose_host callback.
   fn context_get_override_host(&self) -> Option<(String, bool)>;
+
+  /// Creates a new per-worker [`EnvoyLbScheduler`] bound to this load balancer instance.
+  ///
+  /// The returned scheduler can be sent to other threads (it is `Send + Sync`). When
+  /// [`EnvoyLbScheduler::commit`] is called on it, the event is posted to the worker thread
+  /// dispatcher that owns this load balancer; [`LoadBalancer::on_scheduled`] will then be
+  /// invoked on that worker with the corresponding `event_id`.
+  ///
+  /// Must be called from the worker thread that owns this load balancer (typically from
+  /// [`LoadBalancerConfig::new_load_balancer`]). Multiple schedulers may be created for the
+  /// same LB.
+  fn new_scheduler(&self) -> Box<dyn EnvoyLbScheduler>;
+}
+
+/// Envoy-side per-worker scheduler that posts events to the worker thread that owns the
+/// associated [`LoadBalancer`].
+///
+/// The scheduler can be used from any thread. When [`EnvoyLbScheduler::commit`] is called,
+/// the event is posted to the worker dispatcher and [`LoadBalancer::on_scheduled`] will be
+/// invoked on that worker thread with the corresponding `event_id`.
+#[automock]
+pub trait EnvoyLbScheduler: Send + Sync {
+  /// Commit the scheduled event to the worker thread.
+  ///
+  /// Multiple commits with the same `event_id` may coalesce; the module must not assume
+  /// one-to-one correspondence between commits and scheduled callbacks.
+  fn commit(&self, event_id: u64);
+}
+
+struct EnvoyLbSchedulerImpl {
+  raw_ptr: abi::envoy_dynamic_module_type_cluster_lb_scheduler_module_ptr,
+}
+
+unsafe impl Send for EnvoyLbSchedulerImpl {}
+unsafe impl Sync for EnvoyLbSchedulerImpl {}
+
+impl Drop for EnvoyLbSchedulerImpl {
+  fn drop(&mut self) {
+    unsafe {
+      abi::envoy_dynamic_module_callback_cluster_lb_scheduler_delete(self.raw_ptr);
+    }
+  }
+}
+
+impl EnvoyLbScheduler for EnvoyLbSchedulerImpl {
+  fn commit(&self, event_id: u64) {
+    unsafe {
+      abi::envoy_dynamic_module_callback_cluster_lb_scheduler_commit(self.raw_ptr, event_id);
+    }
+  }
+}
+
+impl EnvoyLbScheduler for Box<dyn EnvoyLbScheduler> {
+  fn commit(&self, event_id: u64) {
+    (**self).commit(event_id);
+  }
 }
 
 /// Implementation of EnvoyLoadBalancer that calls into the Envoy ABI.
@@ -744,6 +800,12 @@ impl EnvoyLoadBalancer for EnvoyLoadBalancerImpl {
       None
     }
   }
+
+  fn new_scheduler(&self) -> Box<dyn EnvoyLbScheduler> {
+    let raw_ptr =
+      unsafe { abi::envoy_dynamic_module_callback_cluster_lb_scheduler_new(self.lb_ptr) };
+    Box::new(EnvoyLbSchedulerImpl { raw_ptr })
+  }
 }
 
 /// Trait for defining and recording custom metrics for load balancer modules.
@@ -1254,6 +1316,15 @@ pub trait LoadBalancer {
     _num_hosts_removed: usize,
   ) {
   }
+
+  /// Called on this load balancer's worker thread for every event posted via
+  /// [`EnvoyLbScheduler::commit`].
+  ///
+  /// Multiple commits with the same `event_id` may coalesce; the module must not assume
+  /// one-to-one correspondence between commits and scheduled callbacks.
+  ///
+  /// The default implementation is a no-op.
+  fn on_scheduled(&mut self, _event_id: u64) {}
 }
 
 /// # Safety
@@ -1405,5 +1476,26 @@ pub unsafe extern "C" fn envoy_dynamic_module_on_lb_destroy(
   }))
   .map_err(|panic| {
     crate::log_ffi_panic("envoy_dynamic_module_on_lb_destroy", panic);
+  });
+}
+
+/// # Safety
+///
+/// This is an FFI function called by Envoy. All pointer arguments must be valid as guaranteed
+/// by the Envoy dynamic module ABI.
+#[no_mangle]
+pub unsafe extern "C" fn envoy_dynamic_module_on_lb_scheduled(
+  lb_module_ptr: abi::envoy_dynamic_module_type_lb_module_ptr,
+  event_id: u64,
+) {
+  let _ = catch_unwind(AssertUnwindSafe(|| {
+    let lb = {
+      let raw = lb_module_ptr as *mut *mut dyn LoadBalancer;
+      &mut **raw
+    };
+    lb.on_scheduled(event_id);
+  }))
+  .map_err(|panic| {
+    crate::log_ffi_panic("envoy_dynamic_module_on_lb_scheduled", panic);
   });
 }

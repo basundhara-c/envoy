@@ -37,7 +37,8 @@ public:
       : config_(std::move(config)), cluster_name_(cluster_name) {}
 
   Upstream::LoadBalancerPtr create(Upstream::LoadBalancerParams params) override {
-    return std::make_unique<DynamicModuleLoadBalancer>(config_, params.priority_set, cluster_name_);
+    return std::make_unique<DynamicModuleLoadBalancer>(config_, params.priority_set, cluster_name_,
+                                                       params.dispatcher);
   }
 
   bool recreateOnHostChange() const override { return false; }

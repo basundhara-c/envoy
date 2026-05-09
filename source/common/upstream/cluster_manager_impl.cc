@@ -1512,7 +1512,8 @@ void ClusterManagerImpl::ThreadLocalClusterManagerImpl::ClusterEntry::updateHost
   // If an LB is thread aware, create a new worker local LB on membership changes.
   if (lb_factory_ != nullptr && lb_factory_->recreateOnHostChange()) {
     ENVOY_LOG(debug, "re-creating local LB for TLS cluster {}", name);
-    lb_ = lb_factory_->create({priority_set_, parent_.local_priority_set_});
+    lb_ = lb_factory_->create(
+        {priority_set_, parent_.local_priority_set_, &parent_.thread_local_dispatcher_});
   }
 }
 
@@ -1898,7 +1899,8 @@ ClusterManagerImpl::ThreadLocalClusterManagerImpl::ClusterEntry::ClusterEntry(
   // TODO(mattklein123): Consider converting other LBs over to thread local. All of them could
   // benefit given the healthy panic, locality, and priority calculations that take place.
   ASSERT(lb_factory_ != nullptr);
-  lb_ = lb_factory_->create({priority_set_, parent_.local_priority_set_});
+  lb_ = lb_factory_->create(
+      {priority_set_, parent_.local_priority_set_, &parent_.thread_local_dispatcher_});
 }
 
 void ClusterManagerImpl::ThreadLocalClusterManagerImpl::drainOrCloseConnPools(

@@ -36,6 +36,17 @@ DynamicModuleLbConfig::create(const std::string& lb_policy_name, const std::stri
 
 #undef RESOLVE_SYMBOL
 
+  // Optional: modules that don't use the per-worker scheduler don't have to implement this.
+  // Leave the pointer null and treat null as "module doesn't use scheduling" at call time.
+  {
+    auto on_lb_scheduled =
+        config->dynamic_module_->getFunctionPointer<OnLbScheduledType>(
+            "envoy_dynamic_module_on_lb_scheduled");
+    if (on_lb_scheduled.ok()) {
+      config->on_lb_scheduled_ = on_lb_scheduled.value();
+    }
+  }
+
   // Call on_config_new to get the in-module configuration. The module can call
   // metric-defining callbacks during this invocation.
   envoy_dynamic_module_type_envoy_buffer name_buffer = {config->lb_policy_name_.data(),

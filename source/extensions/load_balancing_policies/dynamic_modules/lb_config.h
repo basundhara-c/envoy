@@ -35,6 +35,7 @@ using OnLbChooseHostType = decltype(&envoy_dynamic_module_on_lb_choose_host);
 using OnLbOnHostMembershipUpdateType =
     decltype(&envoy_dynamic_module_on_lb_on_host_membership_update);
 using OnLbDestroyType = decltype(&envoy_dynamic_module_on_lb_destroy);
+using OnLbScheduledType = decltype(&envoy_dynamic_module_on_lb_scheduled);
 
 /**
  * Configuration for a dynamic module load balancer. This holds the loaded dynamic module and
@@ -67,6 +68,8 @@ public:
   OnLbChooseHostType on_choose_host_;
   OnLbOnHostMembershipUpdateType on_host_membership_update_;
   OnLbDestroyType on_lb_destroy_;
+  // Optional: nullptr if the module does not implement the per-worker scheduler hook.
+  OnLbScheduledType on_lb_scheduled_{nullptr};
 
   // The in-module configuration pointer.
   envoy_dynamic_module_type_lb_config_module_ptr in_module_config_;

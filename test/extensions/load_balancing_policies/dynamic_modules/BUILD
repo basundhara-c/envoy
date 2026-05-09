@@ -37,3 +37,27 @@ envoy_cc_test(
         "@envoy_api//envoy/extensions/load_balancing_policies/dynamic_modules/v3:pkg_cc_proto",
     ],
 )
+
+envoy_cc_test(
+    name = "scheduler_test",
+    srcs = ["scheduler_test.cc"],
+    data = [
+        "//test/extensions/dynamic_modules/test_data/c:lb_scheduler",
+    ],
+    rbe_pool = "6gig",
+    deps = [
+        "//source/common/network:utility_lib",
+        "//source/common/stats:isolated_store_lib",
+        "//source/extensions/dynamic_modules:dynamic_modules_lib",
+        "//source/extensions/load_balancing_policies/dynamic_modules:abi_impl",
+        "//source/extensions/load_balancing_policies/dynamic_modules:lb_config_lib",
+        "//source/extensions/load_balancing_policies/dynamic_modules:load_balancer_lib",
+        "//test/extensions/dynamic_modules:util",
+        "//test/mocks/event:event_mocks",
+        "//test/mocks/upstream:host_mocks",
+        "//test/mocks/upstream:host_set_mocks",
+        "//test/mocks/upstream:priority_set_mocks",
+        "//test/test_common:environment_lib",
+        "//test/test_common:utility_lib",
+    ],
+)

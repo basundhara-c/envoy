@@ -7,9 +7,17 @@ namespace DynamicModules {
 
 DynamicModuleLoadBalancer::DynamicModuleLoadBalancer(DynamicModuleLbConfigSharedPtr config,
                                                      const Upstream::PrioritySet& priority_set,
-                                                     const std::string& cluster_name)
+                                                     const std::string& cluster_name,
+                                                     Event::Dispatcher* dispatcher)
     : config_(std::move(config)), priority_set_(priority_set), cluster_name_(cluster_name),
-      in_module_lb_(nullptr) {
+      in_module_lb_(nullptr),
+      shared_state_(std::make_shared<DynamicModuleLoadBalancerSharedState>()) {
+  // Publish the worker dispatcher and self-pointer before any module-side scheduler can be
+  // constructed: the in-module on_lb_new (called below) may immediately create a scheduler and
+  // start commits from another thread.
+  shared_state_->dispatcher.store(dispatcher, std::memory_order_release);
+  shared_state_->lb.store(this, std::memory_order_release);
+
   // Create the in-module load balancer instance.
   in_module_lb_ = config_->on_lb_new_(config_->in_module_config_, this);
   if (in_module_lb_ == nullptr) {
@@ -30,6 +38,11 @@ DynamicModuleLoadBalancer::DynamicModuleLoadBalancer(DynamicModuleLbConfigShared
 }
 
 DynamicModuleLoadBalancer::~DynamicModuleLoadBalancer() {
+  // Mark the LB as torn down so any scheduler post() callback racing destruction observes a
+  // null pointer and skips dispatching. Both ~LB and dispatcher post() callbacks run on the
+  // same worker thread, so a callback posted before this point has already fired.
+  shared_state_->lb.store(nullptr, std::memory_order_release);
+
   if (in_module_lb_ != nullptr && config_->on_lb_destroy_ != nullptr) {
     config_->on_lb_destroy_(in_module_lb_);
     in_module_lb_ = nullptr;
@@ -120,6 +133,13 @@ bool DynamicModuleLoadBalancer::getHostData(uint32_t priority, size_t index,
     *data = 0;
   }
   return true;
+}
+
+void DynamicModuleLoadBalancer::onScheduled(uint64_t event_id) {
+  if (in_module_lb_ == nullptr || config_->on_lb_scheduled_ == nullptr) {
+    return;
+  }
+  config_->on_lb_scheduled_(in_module_lb_, event_id);
 }
 
 } // namespace DynamicModules

@@ -913,4 +913,27 @@ envoy_dynamic_module_callback_lb_config_record_histogram_value(
   return envoy_dynamic_module_type_metrics_result_Success;
 }
 
+// =============================================================================
+// Per-Worker LB Scheduler Callbacks
+// =============================================================================
+
+envoy_dynamic_module_type_cluster_lb_scheduler_module_ptr
+envoy_dynamic_module_callback_cluster_lb_scheduler_new(
+    envoy_dynamic_module_type_lb_envoy_ptr lb_envoy_ptr) {
+  auto* lb = static_cast<DynamicModuleLoadBalancer*>(lb_envoy_ptr);
+  return new DynamicModuleLoadBalancerScheduler(lb->weakSharedState());
+}
+
+void envoy_dynamic_module_callback_cluster_lb_scheduler_commit(
+    envoy_dynamic_module_type_cluster_lb_scheduler_module_ptr scheduler_module_ptr,
+    uint64_t event_id) {
+  auto* scheduler = static_cast<DynamicModuleLoadBalancerScheduler*>(scheduler_module_ptr);
+  scheduler->commit(event_id);
+}
+
+void envoy_dynamic_module_callback_cluster_lb_scheduler_delete(
+    envoy_dynamic_module_type_cluster_lb_scheduler_module_ptr scheduler_module_ptr) {
+  delete static_cast<DynamicModuleLoadBalancerScheduler*>(scheduler_module_ptr);
+}
+
 } // extern "C"
