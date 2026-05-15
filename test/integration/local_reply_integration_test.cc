@@ -646,4 +646,98 @@ body_format:
   EXPECT_EQ(response->body(), "");
 }
 
+// End-to-end: the matcher path of LocalReplyConfig selects a body based on a request header,
+// and falls through to the default body_format when no action matches.
+TEST_P(LocalReplyIntegrationTest, MatcherSelectsBodyByRequestHeader) {
+  const std::string yaml = R"EOF(
+matcher:
+  matcher_tree:
+    input:
+      name: request-headers
+      typed_config:
+        "@type": type.googleapis.com/envoy.type.matcher.v3.HttpRequestHeaderMatchInput
+        header_name: x-app
+    exact_match_map:
+      map:
+        "alpha":
+          action:
+            name: alpha_local_reply
+            typed_config:
+              "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction
+              status_code: 513
+              body:
+                inline_string: "alpha-body"
+              body_format_override:
+                text_format_source:
+                  inline_string: "%LOCAL_REPLY_BODY%"
+                content_type: "text/html; charset=UTF-8"
+body_format:
+  text_format_source:
+    inline_string: "fallback %RESPONSE_CODE%"
+  )EOF";
+  setLocalReplyConfig(yaml);
+  initialize();
+
+  // Match arm: header x-app=alpha selects the alpha action.
+  {
+    codec_client_ = makeHttpConnection(lookupPort("http"));
+    auto encoder_decoder =
+        codec_client_->startRequest(Http::TestRequestHeaderMapImpl{{":method", "POST"},
+                                                                   {":path", "/test/long/url"},
+                                                                   {":scheme", "http"},
+                                                                   {":authority", "sni.lyft.com"},
+                                                                   {"x-app", "alpha"}});
+    auto response = std::move(encoder_decoder.second);
+
+    ASSERT_TRUE(fake_upstreams_[0]->waitForHttpConnection(*dispatcher_, fake_upstream_connection_));
+    ASSERT_TRUE(fake_upstream_connection_->waitForNewStream(*dispatcher_, upstream_request_));
+    ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
+    ASSERT_TRUE(fake_upstream_connection_->close());
+    ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
+    ASSERT_TRUE(response->waitForEndStream());
+
+    if (downstream_protocol_ == Http::CodecType::HTTP1) {
+      ASSERT_TRUE(codec_client_->waitForDisconnect());
+    } else {
+      codec_client_->close();
+    }
+
+    EXPECT_TRUE(response->complete());
+    EXPECT_EQ("513", response->headers().Status()->value().getStringView());
+    EXPECT_EQ("text/html; charset=UTF-8",
+              response->headers().ContentType()->value().getStringView());
+    EXPECT_EQ(response->body(), "alpha-body");
+  }
+
+  // No match: x-app header missing, falls back to default body_format.
+  {
+    fake_upstream_connection_.reset();
+    upstream_request_.reset();
+    codec_client_ = makeHttpConnection(lookupPort("http"));
+    auto encoder_decoder =
+        codec_client_->startRequest(Http::TestRequestHeaderMapImpl{{":method", "POST"},
+                                                                   {":path", "/test/long/url"},
+                                                                   {":scheme", "http"},
+                                                                   {":authority", "sni.lyft.com"}});
+    auto response = std::move(encoder_decoder.second);
+
+    ASSERT_TRUE(fake_upstreams_[0]->waitForHttpConnection(*dispatcher_, fake_upstream_connection_));
+    ASSERT_TRUE(fake_upstream_connection_->waitForNewStream(*dispatcher_, upstream_request_));
+    ASSERT_TRUE(upstream_request_->waitForHeadersComplete());
+    ASSERT_TRUE(fake_upstream_connection_->close());
+    ASSERT_TRUE(fake_upstream_connection_->waitForDisconnect());
+    ASSERT_TRUE(response->waitForEndStream());
+
+    if (downstream_protocol_ == Http::CodecType::HTTP1) {
+      ASSERT_TRUE(codec_client_->waitForDisconnect());
+    } else {
+      codec_client_->close();
+    }
+
+    EXPECT_TRUE(response->complete());
+    EXPECT_EQ("503", response->headers().Status()->value().getStringView());
+    EXPECT_EQ(response->body(), "fallback 503");
+  }
+}
+
 } // namespace Envoy

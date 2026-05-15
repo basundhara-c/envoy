@@ -3,6 +3,7 @@
 
 #include "source/common/http/header_utility.h"
 #include "source/common/local_reply/local_reply.h"
+#include "source/common/router/string_accessor_impl.h"
 
 #include "test/mocks/http/mocks.h"
 #include "test/mocks/server/factory_context.h"
@@ -478,6 +479,201 @@ TEST_F(LocalReplyTest, TestMapperWithContentType) {
   EXPECT_EQ(response_headers_.Status()->value().getStringView(), "421");
   EXPECT_EQ(body_, "421 body text");
   EXPECT_EQ(content_type_, "text/plain");
+}
+
+TEST_F(LocalReplyTest, TestMatcherRewriteOnRequestHeader) {
+  // Matcher dispatch on a request header value with two map entries.
+  const std::string yaml = R"(
+    matcher:
+      matcher_tree:
+        input:
+          name: request-headers
+          typed_config:
+            "@type": type.googleapis.com/envoy.type.matcher.v3.HttpRequestHeaderMatchInput
+            header_name: x-route
+        exact_match_map:
+          map:
+            "foo":
+              action:
+                name: foo_local_reply
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction
+                  status_code: 503
+                  body:
+                    inline_string: "foo body"
+            "bar":
+              action:
+                name: bar_local_reply
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction
+                  status_code: 504
+                  body:
+                    inline_string: "bar body"
+)";
+  TestUtility::loadFromYaml(yaml, config_);
+  auto local = *Factory::create(config_, context_);
+
+  Http::TestRequestHeaderMapImpl foo_req{{":method", "GET"}, {":path", "/p"}, {"x-route", "foo"}};
+  resetData(400);
+  local->rewrite(&foo_req, response_headers_, stream_info_, code_, body_, content_type_);
+  EXPECT_EQ(code_, static_cast<Http::Code>(503));
+  EXPECT_EQ(response_headers_.Status()->value().getStringView(), "503");
+  EXPECT_EQ(body_, "foo body");
+
+  Http::TestRequestHeaderMapImpl bar_req{{":method", "GET"}, {":path", "/p"}, {"x-route", "bar"}};
+  resetData(400);
+  Http::TestResponseHeaderMapImpl response_headers2;
+  StreamInfo::StreamInfoImpl stream_info2(time_system_.timeSystem(), nullptr,
+                                          StreamInfo::FilterState::LifeSpan::FilterChain);
+  local->rewrite(&bar_req, response_headers2, stream_info2, code_, body_, content_type_);
+  EXPECT_EQ(code_, static_cast<Http::Code>(504));
+  EXPECT_EQ(body_, "bar body");
+}
+
+TEST_F(LocalReplyTest, TestMatcherNoMatchFallsThroughToBodyFormat) {
+  // When no matcher arm matches, the default body_format formatter is still applied.
+  const std::string yaml = R"(
+    matcher:
+      matcher_tree:
+        input:
+          name: request-headers
+          typed_config:
+            "@type": type.googleapis.com/envoy.type.matcher.v3.HttpRequestHeaderMatchInput
+            header_name: x-route
+        exact_match_map:
+          map:
+            "foo":
+              action:
+                name: foo_local_reply
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction
+                  status_code: 503
+                  body:
+                    inline_string: "foo body"
+    body_format:
+      text_format_source:
+        inline_string: "default: %LOCAL_REPLY_BODY% %RESPONSE_CODE%"
+)";
+  TestUtility::loadFromYaml(yaml, config_);
+  auto local = *Factory::create(config_, context_);
+
+  // No header that matches the map; should fall through to default body_format.
+  Http::TestRequestHeaderMapImpl req{{":method", "GET"}, {":path", "/p"}};
+  resetData(429);
+  local->rewrite(&req, response_headers_, stream_info_, code_, body_, content_type_);
+  EXPECT_EQ(code_, static_cast<Http::Code>(429));
+  EXPECT_EQ(response_headers_.Status()->value().getStringView(), "429");
+  EXPECT_EQ(body_, "default: Init body text 429");
+  EXPECT_EQ(content_type_, "text/plain");
+}
+
+TEST_F(LocalReplyTest, TestMatcherAndMappersMutuallyExclusive) {
+  // Setting both 'mappers' and 'matcher' is rejected at config load.
+  const std::string yaml = R"(
+    mappers:
+    - filter:
+        status_code_filter:
+          comparison:
+            op: EQ
+            value:
+              default_value: 400
+              runtime_key: key_b
+      status_code: 401
+    matcher:
+      matcher_tree:
+        input:
+          name: request-headers
+          typed_config:
+            "@type": type.googleapis.com/envoy.type.matcher.v3.HttpRequestHeaderMatchInput
+            header_name: x-route
+        exact_match_map:
+          map:
+            "foo":
+              action:
+                name: foo_local_reply
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction
+                  status_code: 503
+)";
+  TestUtility::loadFromYaml(yaml, config_);
+  EXPECT_FALSE(Factory::create(config_, context_).ok());
+}
+
+TEST_F(LocalReplyTest, TestMatcherOnFilterState) {
+  // Showcase: matcher dispatch on filter state value.
+  const std::string yaml = R"(
+    matcher:
+      matcher_tree:
+        input:
+          name: filter-state
+          typed_config:
+            "@type": type.googleapis.com/envoy.extensions.matching.common_inputs.network.v3.FilterStateInput
+            key: route.tag
+        exact_match_map:
+          map:
+            "alpha":
+              action:
+                name: alpha_local_reply
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction
+                  status_code: 503
+                  body:
+                    inline_string: "alpha body"
+)";
+  TestUtility::loadFromYaml(yaml, config_);
+  auto local = *Factory::create(config_, context_);
+
+  stream_info_.filterState()->setData(
+      "route.tag", std::make_shared<Router::StringAccessorImpl>("alpha"),
+      StreamInfo::FilterState::StateType::ReadOnly, StreamInfo::FilterState::LifeSpan::FilterChain);
+
+  resetData(400);
+  local->rewrite(&request_headers_, response_headers_, stream_info_, code_, body_, content_type_);
+  EXPECT_EQ(code_, static_cast<Http::Code>(503));
+  EXPECT_EQ(response_headers_.Status()->value().getStringView(), "503");
+  EXPECT_EQ(body_, "alpha body");
+}
+
+TEST_F(LocalReplyTest, TestMatcherHeaderAdditionAndFormatterOverride) {
+  // Matcher action can also add headers and override the response body format.
+  const std::string yaml = R"(
+    matcher:
+      matcher_tree:
+        input:
+          name: request-headers
+          typed_config:
+            "@type": type.googleapis.com/envoy.type.matcher.v3.HttpRequestHeaderMatchInput
+            header_name: x-route
+        exact_match_map:
+          map:
+            "html":
+              action:
+                name: html_local_reply
+                typed_config:
+                  "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction
+                  status_code: 503
+                  body:
+                    inline_string: "503 body"
+                  body_format_override:
+                    text_format_source:
+                      inline_string: "<h1>%LOCAL_REPLY_BODY%</h1>"
+                    content_type: "text/html; charset=UTF-8"
+                  headers_to_add:
+                  - header:
+                      key: x-error-source
+                      value: matcher
+                    append_action: OVERWRITE_IF_EXISTS_OR_ADD
+)";
+  TestUtility::loadFromYaml(yaml, config_);
+  auto local = *Factory::create(config_, context_);
+
+  Http::TestRequestHeaderMapImpl req{{":method", "GET"}, {":path", "/p"}, {"x-route", "html"}};
+  resetData(500);
+  local->rewrite(&req, response_headers_, stream_info_, code_, body_, content_type_);
+  EXPECT_EQ(code_, static_cast<Http::Code>(503));
+  EXPECT_EQ(body_, "<h1>503 body</h1>");
+  EXPECT_EQ(content_type_, "text/html; charset=UTF-8");
+  EXPECT_EQ(response_headers_.get_("x-error-source"), "matcher");
 }
 
 } // namespace LocalReply

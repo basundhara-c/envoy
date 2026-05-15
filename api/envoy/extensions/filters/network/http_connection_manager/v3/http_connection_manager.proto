@@ -1137,9 +1137,12 @@ message ForwardProtoConfig {
 }
 
 // The configuration to customize local reply returned by Envoy.
+// [#next-free-field: 4]
 message LocalReplyConfig {
   // Configuration of list of mappers which allows to filter and change local response.
   // The mappers will be checked by the specified order until one is matched.
+  // Cannot be set together with :ref:`matcher
+  // <envoy_v3_api_field_extensions.filters.network.http_connection_manager.v3.LocalReplyConfig.matcher>`.
   repeated ResponseMapper mappers = 1;
 
   // The configuration to form response body from the :ref:`command operators <config_access_log_command_operators>`
@@ -1181,6 +1184,42 @@ message LocalReplyConfig {
   //  }
   //
   config.core.v3.SubstitutionFormatString body_format = 2;
+
+  // Unified matcher used to select a local reply rewrite. The matcher is evaluated against the
+  // :ref:`HTTP matching data <arch_overview_matching_api>` (request headers, response headers and
+  // ``StreamInfo``), and the matched action must be of type
+  // :ref:`LocalReplyMapperAction
+  // <envoy_v3_api_msg_extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction>`.
+  //
+  // When no action matches, ``body_format`` (if set) is still applied.
+  //
+  // Cannot be set together with :ref:`mappers
+  // <envoy_v3_api_field_extensions.filters.network.http_connection_manager.v3.LocalReplyConfig.mappers>`.
+  xds.type.matcher.v3.Matcher matcher = 3;
+}
+
+// Match action used by the :ref:`local reply matcher
+// <envoy_v3_api_field_extensions.filters.network.http_connection_manager.v3.LocalReplyConfig.matcher>`
+// to rewrite the response. Mirrors the fields of :ref:`ResponseMapper
+// <envoy_v3_api_msg_extensions.filters.network.http_connection_manager.v3.ResponseMapper>` other
+// than ``filter``, which is replaced by the surrounding matcher tree.
+// [#next-free-field: 5]
+message LocalReplyMapperAction {
+  // The new response status code if specified.
+  google.protobuf.UInt32Value status_code = 1 [(validate.rules).uint32 = {lt: 600 gte: 200}];
+
+  // The new local reply body text if specified. It will be used in the ``%LOCAL_REPLY_BODY%``
+  // command operator in the ``body_format``.
+  config.core.v3.DataSource body = 2;
+
+  // A per action ``body_format`` to override the :ref:`body_format <envoy_v3_api_field_extensions.filters.network.http_connection_manager.v3.LocalReplyConfig.body_format>`.
+  // It will be used when this action is matched.
+  config.core.v3.SubstitutionFormatString body_format_override = 3;
+
+  // HTTP headers to add to a local reply. This allows the action to append, to add
+  // or to override headers of any local reply before it is sent to a downstream client.
+  repeated config.core.v3.HeaderValueOption headers_to_add = 4
+      [(validate.rules).repeated = {max_items: 1000}];
 }
 
 // The configuration to filter and change local response.

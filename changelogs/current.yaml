@@ -102,6 +102,16 @@ removed_config_or_runtime:
 # *Normally occurs at the end of the* :ref:`deprecation period <deprecated>`
 
 new_features:
+- area: http
+  change: |
+    Added a unified :ref:`matcher <envoy_v3_api_field_extensions.filters.network.http_connection_manager.v3.LocalReplyConfig.matcher>`
+    field to ``LocalReplyConfig`` as an alternative to the ordered ``mappers`` list. Match actions
+    use the new
+    :ref:`LocalReplyMapperAction <envoy_v3_api_msg_extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction>`
+    type, which carries the same ``status_code``, ``body``, ``body_format_override`` and
+    ``headers_to_add`` fields as ``ResponseMapper``. The matcher is evaluated against the HTTP
+    matching data, so existing inputs such as ``FilterStateInput`` can select the local reply.
+    The ``mappers`` and ``matcher`` fields are mutually exclusive.
 - area: router
   change: |
     Added support for ``refreshRouteCluster`` on weighted cluster routes. When a filter calls

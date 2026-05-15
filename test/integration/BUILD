@@ -2648,6 +2648,7 @@ envoy_cc_test(
     deps = [
         ":http_integration_lib",
         ":http_protocol_integration_lib",
+        "//source/common/http/matching:inputs_lib",
         "//test/test_common:utility_lib",
     ],
 )

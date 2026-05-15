@@ -86,3 +86,54 @@ Example of a LocalReplyConfig with ``body_format`` field.
     text_format: "%LOCAL_REPLY_BODY% %RESPONSE_CODE%"
 
 In above example, there is a ``body_format_override`` inside the first ``mapper`` with a filter matching ``status_code == 400``. It generates the response body in plain text format by concatenating %LOCAL_REPLY_BODY% with the ``:path`` request header. It is only used when the first mapper is matched. There is a ``body_format`` at the bottom of the config and at the same level as field ``mappers``. It is used when non of the mappers is matched or the matched mapper doesn't have its own ``body_format_override`` specified.
+
+.. _config_http_conn_man_local_reply_matcher:
+
+Local reply matcher
+-------------------
+
+As an alternative to the ordered ``mappers`` list, ``LocalReplyConfig`` may use the unified
+:ref:`Matcher API <arch_overview_matching_api>` to select a rewrite. The matcher is evaluated
+against the HTTP matching data (request headers, response headers and ``StreamInfo``, which
+includes the per-request :ref:`filter state <arch_overview_advanced_filter_state_sharing>`). The
+matched action must be of type
+:ref:`LocalReplyMapperAction <envoy_v3_api_msg_extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction>`,
+which carries the same ``status_code``, ``body``, ``body_format_override`` and ``headers_to_add``
+fields as :ref:`ResponseMapper <envoy_v3_api_msg_extensions.filters.network.http_connection_manager.v3.ResponseMapper>`.
+
+When the matcher returns no match, the top-level ``body_format`` (if set) still applies. The
+``mappers`` and ``matcher`` fields are mutually exclusive and setting both is a configuration
+error.
+
+Example using a :ref:`FilterStateInput <envoy_v3_api_msg_extensions.matching.common_inputs.network.v3.FilterStateInput>`
+to dispatch on a filter state value previously written by an upstream filter:
+
+.. code-block:: yaml
+
+  matcher:
+    matcher_tree:
+      input:
+        name: app
+        typed_config:
+          "@type": type.googleapis.com/envoy.extensions.matching.common_inputs.network.v3.FilterStateInput
+          key: route.tag
+      exact_match_map:
+        map:
+          "alpha":
+            action:
+              name: alpha_local_reply
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction
+                status_code: 503
+                body:
+                  inline_string: "alpha error"
+          "beta":
+            action:
+              name: beta_local_reply
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.LocalReplyMapperAction
+                status_code: 503
+                body:
+                  inline_string: "beta error"
+  body_format:
+    text_format: "%LOCAL_REPLY_BODY%"

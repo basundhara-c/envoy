@@ -14,7 +14,10 @@ envoy_cc_test(
     rbe_pool = "6gig",
     deps = [
         "//source/common/formatter:formatter_extension_lib",
+        "//source/common/http/matching:inputs_lib",
         "//source/common/local_reply:local_reply_lib",
+        "//source/common/router:string_accessor_lib",
+        "//source/extensions/matching/network/common:inputs_lib",
         "//test/mocks/http:http_mocks",
         "//test/mocks/server:factory_context_mocks",
         "//test/mocks/stream_info:stream_info_mocks",
