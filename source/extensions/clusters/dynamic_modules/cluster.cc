@@ -456,7 +456,7 @@ bool DynamicModuleCluster::addHosts(
   {
     absl::WriterMutexLock lock(host_map_lock_);
     for (const auto& host : result_hosts) {
-      host_map_[host.get()] = host;
+      host_map_[host.get()] = {host, priority};
     }
   }
 
@@ -500,27 +500,32 @@ bool DynamicModuleCluster::updateHostHealth(Upstream::HostSharedPtr host,
     break;
   }
 
-  // Find the priority level that contains this host and trigger a priority set update to
-  // propagate the health change to load balancers.
-  const auto& host_sets = priority_set_.hostSetsPerPriority();
-  for (uint32_t p = 0; p < host_sets.size(); ++p) {
-    const auto& hosts = host_sets[p]->hosts();
-    for (const auto& h : hosts) {
-      if (h.get() == host.get()) {
-        auto all_hosts = std::make_shared<Upstream::HostVector>(hosts);
-        auto hosts_per_locality = buildHostsPerLocality(*all_hosts);
-        priority_set_.updateHosts(
-            p, Upstream::HostSetImpl::partitionHosts(all_hosts, std::move(hosts_per_locality)), {},
-            {}, {}, absl::nullopt, absl::nullopt);
-        ENVOY_LOG(debug, "Updated health status for host to {} at priority {}.",
-                  static_cast<int>(health_status), p);
-        return true;
-      }
+  // Look up the priority the host lives at directly, rather than scanning every priority and every
+  // host. The host_map_ is kept in sync with the priority set by addHosts/removeHosts.
+  uint32_t priority;
+  {
+    absl::ReaderMutexLock lock(host_map_lock_);
+    auto it = host_map_.find(host.get());
+    if (it == host_map_.end()) {
+      ENVOY_LOG(error, "Host not found in any priority level during health update.");
+      return false;
     }
+    priority = it->second.priority;
   }
 
-  ENVOY_LOG(error, "Host not found in any priority level during health update.");
-  return false;
+  // Trigger a priority set update on the host's priority to propagate the health change to load
+  // balancers.
+  const auto& host_sets = priority_set_.hostSetsPerPriority();
+  ASSERT(priority < host_sets.size());
+  const auto& hosts = host_sets[priority]->hosts();
+  auto all_hosts = std::make_shared<Upstream::HostVector>(hosts);
+  auto hosts_per_locality = buildHostsPerLocality(*all_hosts);
+  priority_set_.updateHosts(
+      priority, Upstream::HostSetImpl::partitionHosts(all_hosts, std::move(hosts_per_locality)), {},
+      {}, {}, absl::nullopt, absl::nullopt);
+  ENVOY_LOG(debug, "Updated health status for host to {} at priority {}.",
+            static_cast<int>(health_status), priority);
+  return true;
 }
 
 Upstream::HostSharedPtr DynamicModuleCluster::findHostByAddress(const std::string& address) {
@@ -541,7 +546,7 @@ Upstream::HostSharedPtr DynamicModuleCluster::findHost(void* raw_host_ptr) {
   if (it == host_map_.end()) {
     return nullptr;
   }
-  return it->second;
+  return it->second.host;
 }
 
 size_t DynamicModuleCluster::removeHosts(const std::vector<Upstream::HostSharedPtr>& hosts) {

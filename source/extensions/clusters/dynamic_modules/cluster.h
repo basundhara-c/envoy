@@ -465,9 +465,15 @@ private:
   Event::Dispatcher& dispatcher_;
   Server::Configuration::ServerFactoryContext& server_context_;
 
-  // Map from raw host pointer to shared pointer for lookup in chooseHost.
+  // Map from raw host pointer to the host shared pointer and the priority the host lives at. Storing
+  // the priority lets updateHostHealth locate the host's host set in O(1) rather than scanning every
+  // priority and every host.
+  struct HostMapEntry {
+    Upstream::HostSharedPtr host;
+    uint32_t priority;
+  };
   absl::Mutex host_map_lock_;
-  absl::flat_hash_map<void*, Upstream::HostSharedPtr> host_map_ ABSL_GUARDED_BY(host_map_lock_);
+  absl::flat_hash_map<void*, HostMapEntry> host_map_ ABSL_GUARDED_BY(host_map_lock_);
 
   // Handle for the drain close callback registration. Dropped on destruction to unregister.
   Envoy::Common::CallbackHandlePtr drain_handle_;

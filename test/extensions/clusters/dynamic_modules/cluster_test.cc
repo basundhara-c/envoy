@@ -3696,6 +3696,41 @@ TEST_F(DynamicModuleClusterTest, UpdateHostHealthAtNonZeroPriority) {
   EXPECT_EQ(2, envoy_dynamic_module_callback_cluster_lb_get_healthy_host_count(lb_ptr, 1));
 }
 
+// updateHostHealth uses the host->priority index, so it resolves the right priority even when the
+// host lives at a non-adjacent priority, and it stops resolving a host once it is removed (the
+// index is kept in sync by removeHosts).
+TEST_F(DynamicModuleClusterTest, UpdateHostHealthUsesHostPriorityIndex) {
+  auto result = createCluster(makeYamlConfig("cluster_no_op"));
+  ASSERT_TRUE(result.ok()) << result.status().message();
+
+  auto cluster = std::dynamic_pointer_cast<DynamicModuleCluster>(result->first);
+
+  // Add hosts at priorities 0 and 2, skipping priority 1.
+  std::vector<Upstream::HostSharedPtr> hosts_p0;
+  ASSERT_TRUE(addSimpleHosts(*cluster, {"127.0.0.1:10001"}, {1}, hosts_p0, 0));
+  std::vector<Upstream::HostSharedPtr> hosts_p2;
+  ASSERT_TRUE(
+      addSimpleHosts(*cluster, {"127.0.0.1:10002", "127.0.0.1:10003"}, {1, 1}, hosts_p2, 2));
+
+  auto handle = std::make_shared<DynamicModuleClusterHandle>(cluster);
+  auto lb_instance = std::make_unique<DynamicModuleLoadBalancer>(handle, cluster->prioritySet());
+  auto* lb_ptr = static_cast<void*>(lb_instance.get());
+
+  EXPECT_EQ(1, envoy_dynamic_module_callback_cluster_lb_get_healthy_host_count(lb_ptr, 0));
+  EXPECT_EQ(2, envoy_dynamic_module_callback_cluster_lb_get_healthy_host_count(lb_ptr, 2));
+
+  // Flip a host that lives at priority 2; only priority 2 is affected.
+  EXPECT_TRUE(
+      cluster->updateHostHealth(hosts_p2[1], envoy_dynamic_module_type_host_health_Unhealthy));
+  EXPECT_EQ(1, envoy_dynamic_module_callback_cluster_lb_get_healthy_host_count(lb_ptr, 0));
+  EXPECT_EQ(1, envoy_dynamic_module_callback_cluster_lb_get_healthy_host_count(lb_ptr, 2));
+
+  // Once the host is removed from the index, updateHostHealth no longer resolves it.
+  EXPECT_EQ(1, cluster->removeHosts({hosts_p2[1]}));
+  EXPECT_FALSE(
+      cluster->updateHostHealth(hosts_p2[1], envoy_dynamic_module_type_host_health_Healthy));
+}
+
 // The load balancer must register its membership update callback on the priority set supplied at
 // construction, which production callers always fill with the worker local set from
 // ``LoadBalancerParams``. Reference equality against the constructor argument proves the
