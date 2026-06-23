@@ -4,7 +4,6 @@
 #include "envoy/config/endpoint/v3/endpoint_components.pb.h"
 #include "envoy/network/connection.h"
 #include "envoy/network/drain_decision.h"
-#include "envoy/upstream/locality.h"
 
 #include "source/common/buffer/buffer_impl.h"
 #include "source/common/common/thread.h"
@@ -366,21 +365,84 @@ DynamicModuleCluster::workerSlotGet() {
 }
 
 namespace {
-// Builds hosts-per-locality from a host vector using value-based locality comparison.
-Upstream::HostsPerLocalityConstSharedPtr buildHostsPerLocality(const Upstream::HostVector& hosts) {
-  absl::node_hash_map<envoy::config::core::v3::Locality, Upstream::HostVector,
-                      Upstream::LocalityHash, Upstream::LocalityEqualTo>
-      per_locality_hosts;
-  for (const auto& host : hosts) {
-    per_locality_hosts[host->locality()].push_back(host);
-  }
-  std::vector<Upstream::HostVector> locality_hosts;
-  for (auto& [_, h] : per_locality_hosts) {
-    locality_hosts.push_back(std::move(h));
-  }
-  return std::make_shared<Upstream::HostsPerLocalityImpl>(std::move(locality_hosts), false);
+// Mirrors the exclusion predicate used by Upstream::HostSetImpl::partitionHosts(): a host is
+// excluded while pending its first active health check, after an immediate health-check failure,
+// or while draining via EDS.
+bool excludeBasedOnHealthFlag(const Upstream::Host& host) {
+  return host.healthFlagGet(Upstream::Host::HealthFlag::PENDING_ACTIVE_HC) ||
+         host.healthFlagGet(Upstream::Host::HealthFlag::EXCLUDED_VIA_IMMEDIATE_HC_FAIL) ||
+         host.healthFlagGet(Upstream::Host::HealthFlag::EDS_STATUS_DRAINING);
 }
 } // namespace
+
+HostSetParamsBuilder::HostSetParamsBuilder(size_t size_hint)
+    : hosts_(std::make_shared<Upstream::HostVector>()),
+      healthy_hosts_(std::make_shared<Upstream::HealthyHostVector>()),
+      degraded_hosts_(std::make_shared<Upstream::DegradedHostVector>()),
+      excluded_hosts_(std::make_shared<Upstream::ExcludedHostVector>()) {
+  hosts_->reserve(size_hint);
+  healthy_hosts_->get().reserve(size_hint);
+}
+
+void HostSetParamsBuilder::add(const Upstream::HostSharedPtr& host) {
+  hosts_->push_back(host);
+
+  // Classify once. Healthy and degraded are mutually exclusive coarse-health states; exclusion is
+  // an independent health-flag check.
+  const Upstream::Host::Health health = host->coarseHealth();
+  const bool excluded = excludeBasedOnHealthFlag(*host);
+  const auto& locality = host->locality();
+
+  hosts_per_locality_[locality].push_back(host);
+  if (health == Upstream::Host::Health::Healthy) {
+    healthy_hosts_->get().push_back(host);
+    healthy_hosts_per_locality_[locality].push_back(host);
+  } else if (health == Upstream::Host::Health::Degraded) {
+    degraded_hosts_->get().push_back(host);
+    degraded_hosts_per_locality_[locality].push_back(host);
+  }
+  if (excluded) {
+    excluded_hosts_->get().push_back(host);
+    excluded_hosts_per_locality_[locality].push_back(host);
+  }
+}
+
+Upstream::PrioritySet::UpdateHostsParams HostSetParamsBuilder::build() {
+  const size_t num_localities = hosts_per_locality_.size();
+  std::vector<Upstream::HostVector> all_buckets;
+  std::vector<Upstream::HostVector> healthy_buckets;
+  std::vector<Upstream::HostVector> degraded_buckets;
+  std::vector<Upstream::HostVector> excluded_buckets;
+  all_buckets.reserve(num_localities);
+  healthy_buckets.reserve(num_localities);
+  degraded_buckets.reserve(num_localities);
+  excluded_buckets.reserve(num_localities);
+
+  // Emit in hosts_per_locality_ iteration order. Each partition map is keyed by the same locality,
+  // so an absent entry yields an empty bucket aligned to the all-hosts bucket, exactly as
+  // Upstream::HostsPerLocalityImpl::filter() would produce.
+  const auto take = [](LocalityMap& map,
+                       const envoy::config::core::v3::Locality& locality) -> Upstream::HostVector {
+    auto it = map.find(locality);
+    return it == map.end() ? Upstream::HostVector{} : std::move(it->second);
+  };
+  for (auto& [locality, hosts] : hosts_per_locality_) {
+    all_buckets.push_back(std::move(hosts));
+    healthy_buckets.push_back(take(healthy_hosts_per_locality_, locality));
+    degraded_buckets.push_back(take(degraded_hosts_per_locality_, locality));
+    excluded_buckets.push_back(take(excluded_hosts_per_locality_, locality));
+  }
+
+  return Upstream::HostSetImpl::updateHostsParams(
+      std::move(hosts_),
+      std::make_shared<Upstream::HostsPerLocalityImpl>(std::move(all_buckets), false),
+      std::move(healthy_hosts_),
+      std::make_shared<Upstream::HostsPerLocalityImpl>(std::move(healthy_buckets), false),
+      std::move(degraded_hosts_),
+      std::make_shared<Upstream::HostsPerLocalityImpl>(std::move(degraded_buckets), false),
+      std::move(excluded_hosts_),
+      std::make_shared<Upstream::HostsPerLocalityImpl>(std::move(excluded_buckets), false));
+}
 
 bool DynamicModuleCluster::addHosts(
     const std::vector<std::string>& addresses, const std::vector<uint32_t>& weights,
@@ -469,18 +531,20 @@ bool DynamicModuleCluster::addHosts(
   }
 
   const auto& host_set = priority_set_.getOrCreateHostSet(priority);
-  Upstream::HostVectorSharedPtr all_hosts(new Upstream::HostVector(host_set.hosts()));
-  Upstream::HostVector added_hosts;
+  const auto& current_hosts = host_set.hosts();
+
+  // Assemble the new host set in a single walk over the current hosts followed by the newly
+  // created ones; the host list is partitioned by locality and health as it is walked.
+  HostSetParamsBuilder builder(current_hosts.size() + result_hosts.size());
+  for (const auto& host : current_hosts) {
+    builder.add(host);
+  }
   for (const auto& host : result_hosts) {
-    all_hosts->emplace_back(host);
-    added_hosts.emplace_back(host);
+    builder.add(host);
   }
 
-  auto hosts_per_locality = buildHostsPerLocality(*all_hosts);
-
-  priority_set_.updateHosts(
-      priority, Upstream::HostSetImpl::partitionHosts(all_hosts, std::move(hosts_per_locality)), {},
-      added_hosts, {}, absl::nullopt, absl::nullopt);
+  priority_set_.updateHosts(priority, builder.build(), {}, result_hosts, {}, absl::nullopt,
+                            absl::nullopt);
 
   ENVOY_LOG(debug, "Added {} hosts to dynamic module cluster at priority {}.", result_hosts.size(),
             priority);
@@ -515,11 +579,12 @@ bool DynamicModuleCluster::updateHostHealth(Upstream::HostSharedPtr host,
     const auto& hosts = host_sets[p]->hosts();
     for (const auto& h : hosts) {
       if (h.get() == host.get()) {
-        auto all_hosts = std::make_shared<Upstream::HostVector>(hosts);
-        auto hosts_per_locality = buildHostsPerLocality(*all_hosts);
-        priority_set_.updateHosts(
-            p, Upstream::HostSetImpl::partitionHosts(all_hosts, std::move(hosts_per_locality)), {},
-            {}, {}, absl::nullopt, absl::nullopt);
+        // Health flags changed above; re-partition this priority in a single walk.
+        HostSetParamsBuilder builder(hosts.size());
+        for (const auto& member : hosts) {
+          builder.add(member);
+        }
+        priority_set_.updateHosts(p, builder.build(), {}, {}, {}, absl::nullopt, absl::nullopt);
         ENVOY_LOG(debug, "Updated health status for host to {} at priority {}.",
                   static_cast<int>(health_status), p);
         return true;
@@ -586,18 +651,17 @@ size_t DynamicModuleCluster::removeHosts(const std::vector<Upstream::HostSharedP
     removed_set.insert(h.get());
   }
 
-  Upstream::HostVectorSharedPtr remaining_hosts(new Upstream::HostVector());
+  // Assemble the surviving host set in a single walk over the current hosts, skipping the removed
+  // ones; the survivors are partitioned by locality and health as they are walked.
+  HostSetParamsBuilder builder(first_host_set.hosts().size());
   for (const auto& h : first_host_set.hosts()) {
     if (removed_set.find(h.get()) == removed_set.end()) {
-      remaining_hosts->emplace_back(h);
+      builder.add(h);
     }
   }
 
-  auto hosts_per_locality = buildHostsPerLocality(*remaining_hosts);
-
-  priority_set_.updateHosts(
-      0, Upstream::HostSetImpl::partitionHosts(remaining_hosts, std::move(hosts_per_locality)), {},
-      {}, removed_hosts, absl::nullopt, absl::nullopt);
+  priority_set_.updateHosts(0, builder.build(), {}, {}, removed_hosts, absl::nullopt,
+                            absl::nullopt);
 
   ENVOY_LOG(debug, "Removed {} hosts from dynamic module cluster.", removed_hosts.size());
   return removed_hosts.size();

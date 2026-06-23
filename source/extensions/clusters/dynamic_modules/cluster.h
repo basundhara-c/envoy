@@ -15,6 +15,7 @@
 #include "envoy/stats/scope.h"
 #include "envoy/stats/stats.h"
 #include "envoy/thread_local/thread_local.h"
+#include "envoy/upstream/locality.h"
 #include "envoy/upstream/upstream.h"
 
 #include "source/common/common/logger.h"
@@ -27,12 +28,47 @@
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/container/node_hash_map.h"
 #include "absl/functional/function_ref.h"
 
 namespace Envoy {
 namespace Extensions {
 namespace Clusters {
 namespace DynamicModules {
+
+// Single-pass assembler for Upstream::PrioritySet::UpdateHostsParams.
+//
+// Feed every member host once via add(), then call build(). The result matches bucketing the same
+// hosts by locality and calling Upstream::HostSetImpl::partitionHosts(): identical host ordering in
+// every flat partition and identical locality bucketing and bucket order. The host list is walked
+// once rather than once per output structure (host vector, healthy/degraded/excluded partitions,
+// and the four per-locality structures).
+class HostSetParamsBuilder {
+public:
+  // size_hint reserves the host and healthy-host vectors; it is an allocation hint only.
+  explicit HostSetParamsBuilder(size_t size_hint = 0);
+
+  // Adds one host to every output structure it belongs to. Call exactly once per host.
+  void add(const Upstream::HostSharedPtr& host);
+
+  // Emits the assembled params. The builder is left empty and must not be reused.
+  Upstream::PrioritySet::UpdateHostsParams build();
+
+private:
+  using LocalityMap = absl::node_hash_map<envoy::config::core::v3::Locality, Upstream::HostVector,
+                                          Upstream::LocalityHash, Upstream::LocalityEqualTo>;
+
+  Upstream::HostVectorSharedPtr hosts_;
+  std::shared_ptr<Upstream::HealthyHostVector> healthy_hosts_;
+  std::shared_ptr<Upstream::DegradedHostVector> degraded_hosts_;
+  std::shared_ptr<Upstream::ExcludedHostVector> excluded_hosts_;
+  // The all-hosts map fixes bucket identity and emit order; the partition maps hold the
+  // same-locality subsets. Emit iterates hosts_per_locality_, matching the locality bucketing.
+  LocalityMap hosts_per_locality_;
+  LocalityMap healthy_hosts_per_locality_;
+  LocalityMap degraded_hosts_per_locality_;
+  LocalityMap excluded_hosts_per_locality_;
+};
 
 class DynamicModuleCluster;
 class DynamicModuleClusterScheduler;

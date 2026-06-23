@@ -348,6 +348,167 @@ TEST_F(DynamicModuleClusterTest, BatchRemoveMultipleHosts) {
   EXPECT_EQ(0, DynamicModuleClusterTestPeer::getHostMapSize(*cluster));
 }
 
+// Exercises the single-pass host-set assembly across add, health change, and remove with hosts
+// spread over multiple localities. Verifies the flat partitions and the per-locality structures
+// stay correct and mutually consistent through each churn event.
+TEST_F(DynamicModuleClusterTest, AddRemoveWithLocalityAndHealth) {
+  auto result = createCluster(makeYamlConfig("cluster_no_op"));
+  ASSERT_TRUE(result.ok()) << result.status().message();
+
+  auto cluster = std::dynamic_pointer_cast<DynamicModuleCluster>(result->first);
+  ASSERT_NE(nullptr, cluster);
+
+  // Adds the total host count across every per-locality bucket; must always equal hosts().size().
+  auto bucket_total = [](const Upstream::HostsPerLocality& per_locality) {
+    size_t total = 0;
+    for (const auto& bucket : per_locality.get()) {
+      total += bucket.size();
+    }
+    return total;
+  };
+
+  // Add three hosts: two in zone A, one in zone B.
+  std::vector<Upstream::HostSharedPtr> hosts;
+  ASSERT_TRUE(cluster->addHosts({"127.0.0.1:10001", "127.0.0.1:10002", "127.0.0.1:10003"},
+                                {1, 1, 1}, {"", "", ""}, {"A", "B", "A"}, {"", "", ""}, {}, hosts,
+                                0));
+  ASSERT_EQ(3, hosts.size());
+
+  {
+    const auto& hs = *cluster->prioritySet().hostSetsPerPriority()[0];
+    EXPECT_EQ(3, hs.hosts().size());
+    EXPECT_EQ(3, hs.healthyHosts().size());
+    // Per-locality structures cover all hosts and the healthy view is bucket-aligned with the
+    // all-hosts view.
+    EXPECT_EQ(3, bucket_total(hs.hostsPerLocality()));
+    EXPECT_EQ(hs.hostsPerLocality().get().size(), hs.healthyHostsPerLocality().get().size());
+    EXPECT_EQ(3, bucket_total(hs.healthyHostsPerLocality()));
+  }
+
+  // Mark one host unhealthy: it leaves the healthy partition, flat and per-locality.
+  ASSERT_TRUE(cluster->updateHostHealth(hosts[0], envoy_dynamic_module_type_host_health_Unhealthy));
+  {
+    const auto& hs = *cluster->prioritySet().hostSetsPerPriority()[0];
+    EXPECT_EQ(3, hs.hosts().size());
+    EXPECT_EQ(2, hs.healthyHosts().size());
+    EXPECT_EQ(2, bucket_total(hs.healthyHostsPerLocality()));
+  }
+
+  // Mark another host degraded.
+  ASSERT_TRUE(cluster->updateHostHealth(hosts[1], envoy_dynamic_module_type_host_health_Degraded));
+  {
+    const auto& hs = *cluster->prioritySet().hostSetsPerPriority()[0];
+    EXPECT_EQ(1, hs.healthyHosts().size());
+    ASSERT_EQ(1, hs.degradedHosts().size());
+    EXPECT_EQ(hosts[1], hs.degradedHosts()[0]);
+    EXPECT_EQ(1, bucket_total(hs.degradedHostsPerLocality()));
+  }
+
+  // Add a host in a new zone; existing hosts' partition membership is preserved.
+  std::vector<Upstream::HostSharedPtr> hosts2;
+  ASSERT_TRUE(cluster->addHosts({"127.0.0.1:10004"}, {1}, {""}, {"C"}, {""}, {}, hosts2, 0));
+  ASSERT_EQ(1, hosts2.size());
+  {
+    const auto& hs = *cluster->prioritySet().hostSetsPerPriority()[0];
+    EXPECT_EQ(4, hs.hosts().size());
+    EXPECT_EQ(2, hs.healthyHosts().size()); // hosts[2] + the new host.
+    EXPECT_EQ(1, hs.degradedHosts().size());
+    EXPECT_EQ(4, bucket_total(hs.hostsPerLocality()));
+    EXPECT_EQ(2, bucket_total(hs.healthyHostsPerLocality()));
+  }
+
+  // Remove the degraded host; the degraded partition empties and counts stay consistent.
+  EXPECT_EQ(1, cluster->removeHosts({hosts[1]}));
+  {
+    const auto& hs = *cluster->prioritySet().hostSetsPerPriority()[0];
+    EXPECT_EQ(3, hs.hosts().size());
+    EXPECT_EQ(0, hs.degradedHosts().size());
+    EXPECT_EQ(2, hs.healthyHosts().size());
+    EXPECT_EQ(3, bucket_total(hs.hostsPerLocality()));
+    EXPECT_EQ(0, bucket_total(hs.degradedHostsPerLocality()));
+  }
+}
+
+// HostSetParamsBuilder must produce, byte-for-byte, the same UpdateHostsParams as bucketing hosts
+// by locality and calling Upstream::HostSetImpl::partitionHosts(): identical host ordering in every
+// flat partition and identical locality bucketing and bucket order.
+TEST_F(DynamicModuleClusterTest, HostSetParamsBuilderMatchesPartitionHosts) {
+  auto result = createCluster(makeYamlConfig("cluster_no_op"));
+  ASSERT_TRUE(result.ok()) << result.status().message();
+  auto cluster = std::dynamic_pointer_cast<DynamicModuleCluster>(result->first);
+  ASSERT_NE(nullptr, cluster);
+  auto info = cluster->info();
+
+  envoy::config::core::v3::Locality zone_a;
+  zone_a.set_zone("A");
+  envoy::config::core::v3::Locality zone_b;
+  zone_b.set_zone("B");
+  envoy::config::core::v3::Locality zone_c;
+  zone_c.set_zone("C");
+  // Empty locality, multiple localities, interleaved insertion order, and a spread of health states
+  // (healthy, degraded, unhealthy, excluded) to exercise every classification branch.
+  Upstream::HostVector hosts{Upstream::makeTestHost(info, "tcp://127.0.0.1:80", zone_a),
+                             Upstream::makeTestHost(info, "tcp://127.0.0.1:81", zone_b),
+                             Upstream::makeTestHost(info, "tcp://127.0.0.1:82", zone_a),
+                             Upstream::makeTestHost(info, "tcp://127.0.0.1:83"),
+                             Upstream::makeTestHost(info, "tcp://127.0.0.1:84", zone_c),
+                             Upstream::makeTestHost(info, "tcp://127.0.0.1:85", zone_b),
+                             Upstream::makeTestHost(info, "tcp://127.0.0.1:86")};
+  hosts[1]->healthFlagSet(Upstream::Host::HealthFlag::DEGRADED_ACTIVE_HC);
+  hosts[2]->healthFlagSet(Upstream::Host::HealthFlag::FAILED_ACTIVE_HC);
+  // A host pending active HC has also failed it, so it is both excluded and unhealthy; setting
+  // PENDING_ACTIVE_HC alone would violate the coarseHealth() flag invariant.
+  hosts[4]->healthFlagSet(Upstream::Host::HealthFlag::PENDING_ACTIVE_HC);
+  hosts[4]->healthFlagSet(Upstream::Host::HealthFlag::FAILED_ACTIVE_HC);
+  hosts[5]->healthFlagSet(Upstream::Host::HealthFlag::EDS_STATUS_DRAINING);
+
+  auto all_hosts = std::make_shared<const Upstream::HostVector>(hosts);
+
+  // Reference: bucket hosts by locality, then partition. The same node_hash_map type and insertion
+  // order as the builder yields the same bucket ordering within this process, so the two outputs
+  // are directly comparable.
+  absl::node_hash_map<envoy::config::core::v3::Locality, Upstream::HostVector,
+                      Upstream::LocalityHash, Upstream::LocalityEqualTo>
+      per_locality_map;
+  for (const auto& host : hosts) {
+    per_locality_map[host->locality()].push_back(host);
+  }
+  std::vector<Upstream::HostVector> reference_buckets;
+  for (auto& [_, bucket] : per_locality_map) {
+    reference_buckets.push_back(bucket);
+  }
+  auto reference = Upstream::HostSetImpl::partitionHosts(
+      all_hosts,
+      std::make_shared<Upstream::HostsPerLocalityImpl>(std::move(reference_buckets), false));
+
+  HostSetParamsBuilder builder(hosts.size());
+  for (const auto& host : hosts) {
+    builder.add(host);
+  }
+  auto built = builder.build();
+
+  // Flat vectors: identical contents and order.
+  EXPECT_EQ(*reference.hosts, *built.hosts);
+  EXPECT_EQ(reference.healthy_hosts->get(), built.healthy_hosts->get());
+  EXPECT_EQ(reference.degraded_hosts->get(), built.degraded_hosts->get());
+  EXPECT_EQ(reference.excluded_hosts->get(), built.excluded_hosts->get());
+
+  // Per-locality structures: identical bucket count, order, and contents.
+  EXPECT_EQ(reference.hosts_per_locality->get(), built.hosts_per_locality->get());
+  EXPECT_EQ(reference.healthy_hosts_per_locality->get(), built.healthy_hosts_per_locality->get());
+  EXPECT_EQ(reference.degraded_hosts_per_locality->get(), built.degraded_hosts_per_locality->get());
+  EXPECT_EQ(reference.excluded_hosts_per_locality->get(), built.excluded_hosts_per_locality->get());
+
+  EXPECT_FALSE(built.hosts_per_locality->hasLocalLocality());
+
+  // Sanity: the spread populated each partition and produced multiple localities, so the equality
+  // assertions above exercise every branch rather than comparing empty structures.
+  EXPECT_FALSE(built.healthy_hosts->get().empty());
+  EXPECT_FALSE(built.degraded_hosts->get().empty());
+  EXPECT_FALSE(built.excluded_hosts->get().empty());
+  EXPECT_GT(built.hosts_per_locality->get().size(), 1);
+}
+
 // Test that addresses already present in the host set are skipped on a subsequent batch.
 TEST_F(DynamicModuleClusterTest, DuplicateHostDetection) {
   auto result = createCluster(makeYamlConfig("cluster_no_op"));
