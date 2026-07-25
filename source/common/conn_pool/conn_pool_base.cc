@@ -238,7 +238,9 @@ void ConnPoolImplBase::attachStreamToClient(Envoy::ConnectionPool::ActiveClient&
     traffic_stats.upstream_rq_0rtt_.inc();
   }
 
-  if (enforceMaxRequests() && !host_->cluster().resourceManager(priority_).requests().canCreate()) {
+  const Envoy::ResourceLimitContext resource_context{context.requestHeaders()};
+  if (enforceMaxRequests() &&
+      !host_->cluster().resourceManager(priority_).requests().canCreate(resource_context)) {
     ENVOY_LOG(debug, "max streams overflow");
     onPoolFailure(client.real_host_description_, absl::string_view(),
                   ConnectionPool::PoolFailureReason::Overflow, context);
@@ -274,7 +276,8 @@ void ConnPoolImplBase::attachStreamToClient(Envoy::ConnectionPool::ActiveClient&
   host_->stats().rq_active_.inc();
   traffic_stats.upstream_rq_total_.inc();
   traffic_stats.upstream_rq_active_.inc();
-  host_->cluster().resourceManager(priority_).requests().inc();
+  client.requests_cb_token_ =
+      host_->cluster().resourceManager(priority_).requests().incWithContext(resource_context);
 
   onPoolReady(client, context);
 }
@@ -289,7 +292,8 @@ void ConnPoolImplBase::onStreamClosed(Envoy::ConnectionPool::ActiveClient& clien
   num_active_streams_--;
   host_->stats().rq_active_.dec();
   host_->cluster().trafficStats()->upstream_rq_active_.dec();
-  host_->cluster().resourceManager(priority_).requests().dec();
+  host_->cluster().resourceManager(priority_).requests().decByToken(client.requests_cb_token_);
+  client.requests_cb_token_ = 0;
   // We don't update the capacity for HTTP/3 as the stream count should only
   // increase when a MAX_STREAMS frame is received.
   if (trackStreamCapacity()) {

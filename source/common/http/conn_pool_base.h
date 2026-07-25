@@ -25,6 +25,10 @@ struct HttpAttachContext : public Envoy::ConnectionPool::AttachContext {
     }
   }
 
+  const Http::RequestHeaderMap* requestHeaders() const override {
+    return callbacks_ != nullptr ? callbacks_->requestHeaders() : nullptr;
+  }
+
   Http::ResponseDecoder* decoder_;
   Http::ConnectionPool::Callbacks* callbacks_;
   ResponseDecoderHandlePtr decoder_handle_;

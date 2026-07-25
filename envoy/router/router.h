@@ -1585,6 +1585,13 @@ public:
   virtual ~GenericConnectionPoolCallbacks() = default;
 
   /**
+   * @return the downstream request headers driving this stream, or nullptr if unavailable. Exposed
+   * so the connection pool can pass request context to a circuit breaker at admission time. The
+   * default returns nullptr so implementations that have no headers need not override it.
+   */
+  virtual const Http::RequestHeaderMap* requestHeaders() const { return nullptr; }
+
+  /**
    * Called to indicate a failure for GenericConnPool::newStream to establish a stream.
    *
    * @param reason supplies the failure reason.

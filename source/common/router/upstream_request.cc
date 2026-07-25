@@ -606,6 +606,10 @@ void UpstreamRequest::recordConnectionPoolCallbackLatency() {
       start_time_, parent_.callbacks()->dispatcher().timeSource());
 }
 
+const Http::RequestHeaderMap* UpstreamRequest::requestHeaders() const {
+  return parent_.downstreamHeaders();
+}
+
 void UpstreamRequest::onPoolFailure(ConnectionPool::PoolFailureReason reason,
                                     absl::string_view transport_failure_reason,
                                     Upstream::HostDescriptionConstSharedPtr host) {

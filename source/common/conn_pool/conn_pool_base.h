@@ -15,6 +15,11 @@
 #include "fmt/ostream.h"
 
 namespace Envoy {
+
+namespace Http {
+class RequestHeaderMap;
+} // namespace Http
+
 namespace ConnectionPool {
 
 class ConnPoolImplBase;
@@ -24,6 +29,11 @@ class ConnPoolImplBase;
 struct AttachContext {
   // Add a virtual destructor to allow for the dynamic_cast ASSERT in typedContext.
   virtual ~AttachContext() = default;
+
+  // Returns the downstream request headers for the request driving this attach, or nullptr if the
+  // pool type has no request headers (e.g. TCP) or they are otherwise unavailable. Used to build the
+  // ResourceLimitContext so a circuit breaker can make keyed admission decisions.
+  virtual const Http::RequestHeaderMap* requestHeaders() const { return nullptr; }
 };
 
 // ActiveClient provides a base class for connection pool clients that handles connection timings
@@ -152,6 +162,10 @@ public:
   bool timed_out_{false};
   // TODO(danzh) remove this once http codec exposes the handshake state for h3.
   bool has_handshake_completed_{false};
+  // Opaque token returned by the requests() ResourceLimit when the active stream was admitted with
+  // request context. Handed back via decByToken() on stream close so a keyed circuit breaker can
+  // decrement the same bucket. 0 means untracked.
+  uint64_t requests_cb_token_{0};
 
 protected:
   // HTTP/3 subclass should override this.

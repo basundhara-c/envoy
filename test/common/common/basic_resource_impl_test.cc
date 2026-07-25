@@ -70,4 +70,28 @@ TEST_F(BasicResourceLimitImplTest, RuntimeMods) {
   EXPECT_EQ(br.max(), 1337);
 }
 
+// The context-aware overloads default to ignoring the context and delegating to the unkeyed
+// behavior. incWithContext() returns the untracked sentinel (0) and decByToken() treats a non-zero
+// token as a single decrement and 0 as a no-op.
+TEST_F(BasicResourceLimitImplTest, ContextAwareDefaultsDelegate) {
+  BasicResourceLimitImpl br(2);
+  const ResourceLimitContext context{nullptr};
+
+  EXPECT_TRUE(br.canCreate(context));
+  EXPECT_EQ(br.incWithContext(context), 0);
+  EXPECT_EQ(br.count(), 1);
+  EXPECT_TRUE(br.canCreate(context));
+  EXPECT_EQ(br.incWithContext(context), 0);
+  EXPECT_EQ(br.count(), 2);
+  EXPECT_FALSE(br.canCreate(context));
+
+  // decByToken(0) is a no-op; a non-zero token decrements once.
+  br.decByToken(0);
+  EXPECT_EQ(br.count(), 2);
+  br.decByToken(12345);
+  EXPECT_EQ(br.count(), 1);
+  br.decByToken(1);
+  EXPECT_EQ(br.count(), 0);
+}
+
 } // namespace Envoy

@@ -25,6 +25,13 @@ public:
   BasicResourceLimitImpl(uint64_t max) : max_(max) {}
   BasicResourceLimitImpl() : max_(std::numeric_limits<uint64_t>::max()) {}
 
+  // Bring the context-aware overloads from the base into scope; they delegate to the unkeyed
+  // methods below by default. Without these using-declarations the same-named overrides here would
+  // hide them.
+  using ResourceLimit::canCreate;
+  using ResourceLimit::decByToken;
+  using ResourceLimit::incWithContext;
+
   bool canCreate() override { return current_.load() < max(); }
 
   void inc() override { ++current_; }

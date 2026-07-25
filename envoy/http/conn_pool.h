@@ -45,6 +45,13 @@ public:
   virtual void onPoolReady(RequestEncoder& encoder, Upstream::HostDescriptionConstSharedPtr host,
                            StreamInfo::StreamInfo& info,
                            std::optional<Http::Protocol> protocol) PURE;
+
+  /**
+   * @return the downstream request headers driving this stream, or nullptr if unavailable. Exposed
+   * so the connection pool can pass request context to a circuit breaker at admission time. The
+   * default returns nullptr so callers that have no headers need not implement it.
+   */
+  virtual const RequestHeaderMap* requestHeaders() const { return nullptr; }
 };
 
 class Instance;

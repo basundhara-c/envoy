@@ -119,6 +119,7 @@ public:
   void enableDataFromDownstreamForFlowControl();
 
   // GenericConnPool
+  const Http::RequestHeaderMap* requestHeaders() const override;
   void onPoolFailure(ConnectionPool::PoolFailureReason reason,
                      absl::string_view transport_failure_reason,
                      Upstream::HostDescriptionConstSharedPtr host) override;
