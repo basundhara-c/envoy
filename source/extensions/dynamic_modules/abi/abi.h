@@ -14426,6 +14426,164 @@ bool envoy_dynamic_module_callback_health_checker_get_host_metadata_bool(
 envoy_dynamic_module_type_host_health envoy_dynamic_module_callback_health_checker_get_host_health(
     envoy_dynamic_module_type_health_checker_session_envoy_ptr session_envoy_ptr);
 
+// ============================== Circuit Breaker ==============================
+//
+// A circuit breaker extension provides a custom ResourceLimit for a cluster circuit-breaker
+// resource dimension (for example the active-requests dimension). Unlike the built-in cluster-wide
+// counter, a module can key its bookkeeping by request attributes read from the per-request context
+// passed to the admission hooks, enabling limits such as "at most N in flight per tenant".
+//
+// Types
+
+/**
+ * envoy_dynamic_module_type_circuit_breaker_config_envoy_ptr is a raw pointer to the Envoy-side
+ * configuration object for a circuit breaker extension. It is passed to the config-new hook and is
+ * only valid for the duration of that call.
+ *
+ * OWNERSHIP: Envoy owns the object. THREADING: created on the main thread.
+ */
+typedef void* envoy_dynamic_module_type_circuit_breaker_config_envoy_ptr;
+
+/**
+ * envoy_dynamic_module_type_circuit_breaker_config_module_ptr is a pointer to an in-module
+ * configuration object returned by the config-new hook and released by the config-destroy hook.
+ *
+ * OWNERSHIP: the module owns the object.
+ */
+typedef const void* envoy_dynamic_module_type_circuit_breaker_config_module_ptr;
+
+/**
+ * envoy_dynamic_module_type_circuit_breaker_module_ptr is a pointer to an in-module circuit breaker
+ * instance returned by the new hook and released by the destroy hook.
+ *
+ * OWNERSHIP: the module owns the object. THREADING: the instance is shared across all worker
+ * threads; see the admission hooks below.
+ */
+typedef const void* envoy_dynamic_module_type_circuit_breaker_module_ptr;
+
+/**
+ * envoy_dynamic_module_type_circuit_breaker_context_envoy_ptr is a raw pointer to the Envoy-side
+ * per-request context for a single admission decision. It is passed to the can_create and inc hooks
+ * and is only valid for the duration of that call; the module must not retain it.
+ *
+ * OWNERSHIP: Envoy owns the object.
+ */
+typedef void* envoy_dynamic_module_type_circuit_breaker_context_envoy_ptr;
+
+// Event Hooks (the module implements these; Envoy calls them)
+
+/**
+ * envoy_dynamic_module_on_circuit_breaker_config_new is called on the main thread when a cluster
+ * with a circuit breaker extension is loaded.
+ *
+ * @param config_envoy_ptr is the pointer to the Envoy-side configuration object.
+ * @param name is the name identifying the circuit breaker implementation within the module. The
+ * buffer is only valid for the duration of this call, so the module must copy what it needs.
+ * @param config is the configuration bytes for the module. The buffer is only valid for the
+ * duration of this call, so the module must copy what it needs.
+ * @return the pointer to the in-module configuration. Returning nullptr indicates a failure, and
+ * the configuration will be rejected.
+ */
+envoy_dynamic_module_type_circuit_breaker_config_module_ptr
+envoy_dynamic_module_on_circuit_breaker_config_new(
+    envoy_dynamic_module_type_circuit_breaker_config_envoy_ptr config_envoy_ptr,
+    envoy_dynamic_module_type_envoy_buffer name, envoy_dynamic_module_type_envoy_buffer config);
+
+/**
+ * envoy_dynamic_module_on_circuit_breaker_config_destroy is called on the main thread when the
+ * configuration created by envoy_dynamic_module_on_circuit_breaker_config_new is no longer needed.
+ *
+ * @param config_module_ptr is the in-module configuration pointer to release.
+ */
+void envoy_dynamic_module_on_circuit_breaker_config_destroy(
+    envoy_dynamic_module_type_circuit_breaker_config_module_ptr config_module_ptr);
+
+/**
+ * envoy_dynamic_module_on_circuit_breaker_new is called on the main thread to create a circuit
+ * breaker instance for one cluster resource dimension. The returned instance is shared across all
+ * worker threads.
+ *
+ * @param config_module_ptr is the in-module configuration pointer.
+ * @param max is the configured maximum for the resource dimension (from the max_* threshold field).
+ * @return the pointer to the in-module circuit breaker instance. Returning nullptr indicates the
+ * module declines this dimension, and the built-in limit is used instead.
+ */
+envoy_dynamic_module_type_circuit_breaker_module_ptr envoy_dynamic_module_on_circuit_breaker_new(
+    envoy_dynamic_module_type_circuit_breaker_config_module_ptr config_module_ptr, uint64_t max);
+
+/**
+ * envoy_dynamic_module_on_circuit_breaker_can_create returns whether a new resource may be created.
+ *
+ * THREADING: called on any worker thread, concurrently, on the shared instance. The module must
+ * synchronize its own state.
+ *
+ * @param cb_module_ptr is the in-module circuit breaker instance.
+ * @param context_envoy_ptr is the per-request context, valid only for this call, or nullptr if no
+ * context is available.
+ * @return true if the resource can be created, false if the breaker is open.
+ */
+bool envoy_dynamic_module_on_circuit_breaker_can_create(
+    envoy_dynamic_module_type_circuit_breaker_module_ptr cb_module_ptr,
+    envoy_dynamic_module_type_circuit_breaker_context_envoy_ptr context_envoy_ptr);
+
+/**
+ * envoy_dynamic_module_on_circuit_breaker_inc reserves one resource and returns an opaque token
+ * identifying the reservation. The token is handed back to the dec hook when the resource is
+ * released. A returned token of 0 is the sentinel for "untracked".
+ *
+ * THREADING: called on any worker thread, concurrently, on the shared instance.
+ *
+ * @param cb_module_ptr is the in-module circuit breaker instance.
+ * @param context_envoy_ptr is the per-request context, valid only for this call, or nullptr.
+ * @return an opaque token for the reservation, or 0 if the reservation was not tracked.
+ */
+uint64_t envoy_dynamic_module_on_circuit_breaker_inc(
+    envoy_dynamic_module_type_circuit_breaker_module_ptr cb_module_ptr,
+    envoy_dynamic_module_type_circuit_breaker_context_envoy_ptr context_envoy_ptr);
+
+/**
+ * envoy_dynamic_module_on_circuit_breaker_dec releases the resource previously reserved by the inc
+ * hook, identified by the token it returned. A token of 0 must be a no-op, and an unknown or stale
+ * token (for example after cluster teardown) must be safely ignored.
+ *
+ * THREADING: called on any worker thread, concurrently, on the shared instance.
+ *
+ * @param cb_module_ptr is the in-module circuit breaker instance.
+ * @param token is the opaque token returned by envoy_dynamic_module_on_circuit_breaker_inc.
+ */
+void envoy_dynamic_module_on_circuit_breaker_dec(
+    envoy_dynamic_module_type_circuit_breaker_module_ptr cb_module_ptr, uint64_t token);
+
+/**
+ * envoy_dynamic_module_on_circuit_breaker_destroy is called on the main thread when the circuit
+ * breaker instance is no longer needed.
+ *
+ * @param cb_module_ptr is the in-module circuit breaker instance to release.
+ */
+void envoy_dynamic_module_on_circuit_breaker_destroy(
+    envoy_dynamic_module_type_circuit_breaker_module_ptr cb_module_ptr);
+
+// Callbacks (Envoy implements these; the module calls them)
+
+/**
+ * envoy_dynamic_module_callback_circuit_breaker_get_request_header reads a single downstream request
+ * header value from the per-request context, so the module can key its admission decision by a
+ * request attribute.
+ *
+ * @param context_envoy_ptr is the per-request context passed to the can_create/inc hook.
+ * @param key is the header name to look up.
+ * @param result_buffer is the output buffer populated with the header value on success. On failure
+ * its ptr and length are cleared. The buffer points into Envoy-owned memory valid only until the
+ * hook returns.
+ * @return true if the header was found, false otherwise (including when the context has no headers).
+ *
+ * Note that a header value is not guaranteed to be a valid UTF-8 string.
+ */
+bool envoy_dynamic_module_callback_circuit_breaker_get_request_header(
+    envoy_dynamic_module_type_circuit_breaker_context_envoy_ptr context_envoy_ptr,
+    envoy_dynamic_module_type_module_buffer key,
+    envoy_dynamic_module_type_envoy_buffer* result_buffer);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package envoy.extensions.circuit_breakers.dynamic_modules.v3;
+
+import "envoy/extensions/dynamic_modules/v3/dynamic_modules.proto";
+
+import "google/protobuf/any.proto";
+
+import "udpa/annotations/status.proto";
+import "validate/validate.proto";
+
+option java_package = "io.envoyproxy.envoy.extensions.circuit_breakers.dynamic_modules.v3";
+option java_outer_classname = "DynamicModulesProto";
+option java_multiple_files = true;
+option go_package = "github.com/envoyproxy/go-control-plane/envoy/extensions/circuit_breakers/dynamic_modules/v3;dynamic_modulesv3";
+option (udpa.annotations.file_status).package_version_status = ACTIVE;
+
+// [#protodoc-title: Dynamic Modules Circuit Breaker]
+// [#extension: envoy.circuit_breakers.dynamic_modules]
+
+// Configuration for a Dynamic Modules circuit breaker. This substitutes the built-in per-dimension
+// resource counter with a shared object loaded via ``dlopen``, allowing custom admission logic such
+// as limits keyed by a request attribute.
+//
+// A module is loaded only once and shared across the circuit breaker instances that reference it.
+message DynamicModuleCircuitBreaker {
+  // Specifies the shared-object level configuration. This field is required.
+  envoy.extensions.dynamic_modules.v3.DynamicModuleConfig dynamic_module_config = 1
+      [(validate.rules).message = {required: true}];
+
+  // The name identifying the circuit breaker implementation inside the dynamic module. When Envoy
+  // receives this configuration, it passes ``breaker_name`` to the module's config init hook
+  // together with ``breaker_config``.
+  string breaker_name = 2;
+
+  // The configuration for the circuit breaker chosen by ``breaker_name``. If not specified, an
+  // empty configuration is passed to the module.
+  //
+  // ``google.protobuf.Struct`` is serialized as JSON before passing it to the module.
+  // ``google.protobuf.BytesValue`` and ``google.protobuf.StringValue`` are passed directly without
+  // the wrapper.
+  google.protobuf.Any breaker_config = 3;
+}

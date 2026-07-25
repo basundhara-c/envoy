@@ -159,6 +159,13 @@ envoy.extensions.network.socket_interface.sockmap:
   status: wip
   type_urls:
   - envoy.extensions.network.socket_interface.sockmap.v3.Sockmap
+envoy.circuit_breakers.dynamic_modules:
+  categories:
+  - envoy.circuit_breakers
+  security_posture: requires_trusted_downstream_and_upstream
+  status: alpha
+  type_urls:
+  - envoy.extensions.circuit_breakers.dynamic_modules.v3.DynamicModuleCircuitBreaker
 envoy.clusters.aggregate:
   categories:
   - envoy.clusters

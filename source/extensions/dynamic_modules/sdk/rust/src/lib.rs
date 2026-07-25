@@ -10,6 +10,7 @@ pub mod bootstrap;
 pub mod buffer;
 pub mod catch_unwind;
 pub mod cert_validator;
+pub mod circuit_breaker;
 pub mod cluster;
 pub mod dns_resolver;
 // Implementation detail. Public so SDK-provided macros (for example, `declare_matcher!`) that
@@ -903,6 +904,13 @@ macro_rules! declare_all_init_functions {
       "NEW_HEALTH_CHECKER_CONFIG_FUNCTION"
     );
   };
+  (@register circuit_breaker : $fn:expr) => {
+    envoy_proxy_dynamic_modules_rust_sdk::set_factory_once!(
+      envoy_proxy_dynamic_modules_rust_sdk::NEW_CIRCUIT_BREAKER_CONFIG_FUNCTION,
+      $fn,
+      "NEW_CIRCUIT_BREAKER_CONFIG_FUNCTION"
+    );
+  };
 }
 
 /// The function signature for the new network filter configuration function.
@@ -1261,6 +1269,20 @@ pub type NewStatSinkConfigFunction = fn(
 /// [`declare_all_init_functions!`] (or [`declare_stat_sink_init_functions!`]) and is not intended
 /// to be set directly.
 pub static NEW_STAT_SINK_CONFIG_FUNCTION: OnceLock<NewStatSinkConfigFunction> = OnceLock::new();
+
+/// The factory function type for circuit breakers.
+///
+/// The `name` is the value of `breaker_name` from the circuit breaker configuration, allowing a
+/// single module to dispatch to different implementations. The `config` is the raw bytes from the
+/// `breaker_config` field. Returning `None` causes Envoy to reject the circuit breaker
+/// configuration.
+pub type NewCircuitBreakerConfigFunction =
+    fn(name: &str, config: &[u8]) -> Option<Box<dyn circuit_breaker::CircuitBreakerConfig>>;
+
+/// The global factory function for circuit breakers. This is set via the `circuit_breaker:` arm of
+/// [`declare_all_init_functions!`] and is not intended to be set directly.
+pub static NEW_CIRCUIT_BREAKER_CONFIG_FUNCTION: OnceLock<NewCircuitBreakerConfigFunction> =
+    OnceLock::new();
 
 /// Declare the init functions for a stats sink dynamic module.
 ///

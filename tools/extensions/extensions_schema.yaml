@@ -68,6 +68,7 @@ categories:
 - envoy.access_loggers
 - envoy.bootstrap
 - envoy.built_in_formatters
+- envoy.circuit_breakers
 - envoy.clusters
 - envoy.compression.compressor
 - envoy.compression.decompressor

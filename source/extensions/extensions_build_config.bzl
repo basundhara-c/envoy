@@ -21,6 +21,7 @@ EXTENSIONS = {
     # Clusters
     #
 
+    "envoy.circuit_breakers.dynamic_modules":           "//source/extensions/circuit_breakers/dynamic_modules:config",
     "envoy.clusters.aggregate":                         "//source/extensions/clusters/aggregate:cluster",
     "envoy.clusters.composite":                         "//source/extensions/clusters/composite:cluster",
     "envoy.clusters.dns":                               "//source/extensions/clusters/dns:dns_cluster_lib",

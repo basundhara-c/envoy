@@ -4946,4 +4946,18 @@ envoy_dynamic_module_callback_health_checker_get_host_health(
   return envoy_dynamic_module_type_host_health_Unhealthy;
 }
 
+// ---- Circuit Breaker callbacks ----
+
+__attribute__((weak)) bool envoy_dynamic_module_callback_circuit_breaker_get_request_header(
+    envoy_dynamic_module_type_circuit_breaker_context_envoy_ptr,
+    envoy_dynamic_module_type_module_buffer, envoy_dynamic_module_type_envoy_buffer* result_buffer) {
+  IS_ENVOY_BUG("envoy_dynamic_module_callback_circuit_breaker_get_request_header: "
+               "not implemented in this context");
+  if (result_buffer != nullptr) {
+    result_buffer->ptr = nullptr;
+    result_buffer->length = 0;
+  }
+  return false;
+}
+
 } // extern "C"

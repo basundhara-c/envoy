@@ -4,6 +4,7 @@ licenses(["notice"])  # Apache 2
 
 package(default_visibility = [
     "//test/extensions/access_loggers/dynamic_modules:__pkg__",
+    "//test/extensions/circuit_breakers/dynamic_modules:__pkg__",
     "//test/extensions/clusters/dynamic_modules:__pkg__",
     "//test/extensions/dynamic_modules:__pkg__",
     "//test/extensions/dynamic_modules/bootstrap:__pkg__",
@@ -234,6 +235,10 @@ test_program(name = "tracer_no_op")
 test_program(name = "tracer_config_fail")
 
 test_program(name = "tracer_with_values")
+
+test_program(name = "circuit_breaker_no_op")
+
+test_program(name = "circuit_breaker_missing_config_new")
 
 test_program(name = "stat_sink_no_op")
 
