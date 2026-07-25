@@ -293,6 +293,41 @@ TEST(ResourceManagerImplTest, RetryBudgetIntervalEnabled) {
   }
   EXPECT_FALSE(rm.retries().canCreate());
 }
+
+// A ResourceLimit that always denies, used to prove setRequestsOverride() routes the requests
+// dimension through a custom limit while other dimensions keep the built-in counters.
+class DenyAllResourceLimit : public ResourceLimit {
+public:
+  bool canCreate() override { return false; }
+  void inc() override {}
+  void dec() override {}
+  void decBy(uint64_t) override {}
+  uint64_t max() override { return 0; }
+  uint64_t count() const override { return 0; }
+};
+
+TEST(ResourceManagerImplTest, RequestsOverrideSubstitutesRequestsDimension) {
+  NiceMock<Runtime::MockLoader> runtime;
+  NiceMock<Stats::MockGauge> gauge;
+  NiceMock<Stats::MockStore> store;
+  NiceMock<Event::MockDispatcher> dispatcher;
+  ON_CALL(store, gauge(_, _)).WillByDefault(ReturnRef(gauge));
+
+  ResourceManagerImpl resource_manager(runtime, "circuit_breakers.override_test.default.", 1, 1, 1,
+                                        1, 1, 100, clusterCircuitBreakersStats(store), std::nullopt,
+                                        std::nullopt, std::nullopt, dispatcher);
+
+  // Before override: the requests dimension uses the built-in counter (max 1, so canCreate is true
+  // while empty).
+  EXPECT_TRUE(resource_manager.requests().canCreate());
+
+  resource_manager.setRequestsOverride(std::make_unique<DenyAllResourceLimit>());
+
+  // requests() now routes to the override, which always denies. Other dimensions are unaffected.
+  EXPECT_FALSE(resource_manager.requests().canCreate());
+  EXPECT_TRUE(resource_manager.connections().canCreate());
+  EXPECT_TRUE(resource_manager.pendingRequests().canCreate());
+}
 } // namespace
 } // namespace Upstream
 } // namespace Envoy

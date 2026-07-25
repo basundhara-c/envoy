@@ -35,6 +35,7 @@
 #include "envoy/ssl/context_manager.h"
 #include "envoy/stats/scope.h"
 #include "envoy/upstream/health_checker.h"
+#include "envoy/upstream/resource_manager_factory.h"
 #include "envoy/upstream/upstream.h"
 
 #include "source/common/common/dns_utils.h"
@@ -1268,7 +1269,8 @@ ClusterInfoImpl::ClusterInfoImpl(
       resource_managers_(
           config, runtime, name_, *stats_scope_,
           factory_context.serverFactoryContext().clusterManager().clusterCircuitBreakersStatNames(),
-          factory_context.serverFactoryContext().mainThreadDispatcher()),
+          factory_context.serverFactoryContext().mainThreadDispatcher(),
+          factory_context.serverFactoryContext()),
       maintenance_mode_runtime_key_(absl::StrCat("upstream.maintenance_mode.", name_)),
       upstream_local_address_selector_(
           THROW_OR_RETURN_VALUE(createUpstreamLocalAddressSelector(config, bind_config),
@@ -2079,8 +2081,9 @@ ClusterInfoImpl::ResourceManagers::ResourceManagers(
     const envoy::config::cluster::v3::Cluster& config, Runtime::Loader& runtime,
     const std::string& cluster_name, Stats::Scope& stats_scope,
     const ClusterCircuitBreakersStatNames& circuit_breakers_stat_names,
-    Event::Dispatcher& dispatcher)
-    : circuit_breakers_stat_names_(circuit_breakers_stat_names), dispatcher_(dispatcher) {
+    Event::Dispatcher& dispatcher, Server::Configuration::ServerFactoryContext& server_context)
+    : circuit_breakers_stat_names_(circuit_breakers_stat_names), dispatcher_(dispatcher),
+      server_context_(server_context) {
   managers_[enumToInt(ResourcePriority::Default)] = THROW_OR_RETURN_VALUE(
       load(config, runtime, cluster_name, stats_scope, envoy::config::core::v3::DEFAULT),
       ResourceManagerImplPtr);
@@ -2260,12 +2263,39 @@ ClusterInfoImpl::ResourceManagers::load(const envoy::config::cluster::v3::Cluste
       max_connections_per_host = per_host_it->max_connections().value();
     }
   }
-  return std::make_unique<ResourceManagerImpl>(
+  ClusterCircuitBreakersStats cb_stats = ClusterInfoImpl::generateCircuitBreakersStats(
+      stats_scope, priority_stat_name, track_remaining, circuit_breakers_stat_names_);
+  auto manager = std::make_unique<ResourceManagerImpl>(
       runtime, runtime_prefix, max_connections, max_pending_requests, max_requests, max_retries,
-      max_connection_pools, max_connections_per_host,
-      ClusterInfoImpl::generateCircuitBreakersStats(stats_scope, priority_stat_name,
-                                                    track_remaining, circuit_breakers_stat_names_),
-      budget_percent, budget_interval, min_retry_concurrency, dispatcher_);
+      max_connection_pools, max_connections_per_host, cb_stats, budget_percent, budget_interval,
+      min_retry_concurrency, dispatcher_);
+
+  // Install any custom circuit-breaker resource-limit extensions. For the prototype only the
+  // requests dimension is pluggable; other dimensions keep their built-in counters.
+  if (it != thresholds.cend()) {
+    for (const auto& resource_limit_config : it->resource_limit_configs()) {
+      auto* factory =
+          Config::Utility::getAndCheckFactoryByName<Upstream::CircuitBreakerFactory>(
+              resource_limit_config.name(), /*is_optional=*/true);
+      if (factory == nullptr) {
+        return absl::InvalidArgumentError(fmt::format(
+            "Didn't find a registered circuit breaker factory named '{}'",
+            resource_limit_config.name()));
+      }
+      ProtobufTypes::MessagePtr message = factory->createEmptyConfigProto();
+      RETURN_IF_NOT_OK(Config::Utility::translateOpaqueConfig(
+          resource_limit_config.typed_config(), server_context_.messageValidationVisitor(),
+          *message));
+      Upstream::CircuitBreakerResourceParams params{
+          Upstream::CircuitBreakerResource::Requests, max_requests, runtime,
+          runtime_prefix + "max_requests", cb_stats.rq_open_, cb_stats.remaining_rq_};
+      ResourceLimitPtr custom = factory->createResourceLimit(*message, params, server_context_);
+      if (custom != nullptr) {
+        manager->setRequestsOverride(std::move(custom));
+      }
+    }
+  }
+  return manager;
 }
 
 PriorityStateManager::PriorityStateManager(ClusterImplBase& cluster,

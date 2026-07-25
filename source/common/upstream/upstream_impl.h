@@ -1099,7 +1099,8 @@ private:
     ResourceManagers(const envoy::config::cluster::v3::Cluster& config, Runtime::Loader& runtime,
                      const std::string& cluster_name, Stats::Scope& stats_scope,
                      const ClusterCircuitBreakersStatNames& circuit_breakers_stat_names,
-                     Event::Dispatcher& dispatcher);
+                     Event::Dispatcher& dispatcher,
+                     Server::Configuration::ServerFactoryContext& server_context);
     absl::StatusOr<ResourceManagerImplPtr>
     load(const envoy::config::cluster::v3::Cluster& config, Runtime::Loader& runtime,
          const std::string& cluster_name, Stats::Scope& stats_scope,
@@ -1110,6 +1111,7 @@ private:
     Managers managers_;
     const ClusterCircuitBreakersStatNames& circuit_breakers_stat_names_;
     Event::Dispatcher& dispatcher_;
+    Server::Configuration::ServerFactoryContext& server_context_;
   };
 
   struct OptionalClusterStats {

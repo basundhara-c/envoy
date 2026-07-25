@@ -110,10 +110,19 @@ public:
     }
   }
 
+  // Installs a custom ResourceLimit for the requests dimension, produced by a CircuitBreakerFactory
+  // extension. When set, requests() returns it instead of the built-in counter. Must be called at
+  // construction time, before the manager is shared across worker threads.
+  void setRequestsOverride(ResourceLimitPtr requests_override) {
+    requests_override_ = std::move(requests_override);
+  }
+
   // Upstream::ResourceManager
   ResourceLimit& connections() override { return connections_; }
   ResourceLimit& pendingRequests() override { return pending_requests_; }
-  ResourceLimit& requests() override { return requests_; }
+  ResourceLimit& requests() override {
+    return requests_override_ != nullptr ? *requests_override_ : requests_;
+  }
   ResourceLimit& retries() override { return retries_; }
   ResourceLimit& connectionPools() override { return connection_pools_; }
   uint64_t maxConnectionsPerHost() override { return max_connections_per_host_; }
@@ -278,6 +287,9 @@ private:
   ManagedResourceImpl connection_pools_;
   uint64_t max_connections_per_host_;
   RetryBudgetImpl retries_;
+  // Optional custom limit for the requests dimension from a CircuitBreakerFactory extension. Null
+  // means the built-in requests_ counter is used.
+  ResourceLimitPtr requests_override_;
 };
 
 using ResourceManagerImplPtr = std::unique_ptr<ResourceManagerImpl>;

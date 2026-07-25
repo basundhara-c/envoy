@@ -3,6 +3,7 @@ syntax = "proto3";
 package envoy.config.cluster.v3;
 
 import "envoy/config/core/v3/base.proto";
+import "envoy/config/core/v3/extension.proto";
 import "envoy/type/v3/percent.proto";
 
 import "google/protobuf/duration.proto";
@@ -28,7 +29,7 @@ message CircuitBreakers {
 
   // A Thresholds defines CircuitBreaker settings for a
   // :ref:`RoutingPriority<envoy_v3_api_enum_config.core.v3.RoutingPriority>`.
-  // [#next-free-field: 9]
+  // [#next-free-field: 10]
   message Thresholds {
     option (udpa.annotations.versioning).previous_message_type =
         "envoy.api.v2.cluster.CircuitBreakers.Thresholds";
@@ -117,6 +118,13 @@ message CircuitBreakers {
     // :ref:`Circuit Breaking <arch_overview_circuit_break_cluster_maximum_connection_pools>` for
     // more details.
     google.protobuf.UInt32Value max_connection_pools = 7;
+
+    // Optional custom circuit-breaker resource-limit extensions. Each entry substitutes the built-in
+    // counter for one resource dimension with a registered ``envoy.circuit_breakers`` extension (for
+    // example one that keys admission by a request attribute). Dimensions without an entry, or whose
+    // extension returns no limit, keep the built-in behavior derived from the ``max_*`` fields above.
+    // [#extension-category: envoy.circuit_breakers]
+    repeated core.v3.TypedExtensionConfig resource_limit_configs = 9;
   }
 
   // If multiple :ref:`Thresholds<envoy_v3_api_msg_config.cluster.v3.CircuitBreakers.Thresholds>`
