@@ -286,6 +286,20 @@ void DynamicModuleCluster::startPreInit() {
 
 void DynamicModuleCluster::preInitComplete() { onPreInitComplete(); }
 
+bool DynamicModuleCluster::setLocalityWeights(
+    uint32_t priority,
+    const absl::node_hash_map<envoy::config::core::v3::Locality, uint32_t, Upstream::LocalityHash,
+                              Upstream::LocalityEqualTo>& locality_weights_map) {
+  if (locality_weights_map.empty()) {
+    // No weights to set is not an error, just a no-op.
+    return true;
+  }
+  priority_locality_weights_[priority] = locality_weights_map;
+  ENVOY_LOG(debug, "Set {} locality weights for priority {} in dynamic module cluster.",
+            locality_weights_map.size(), priority);
+  return true;
+}
+
 void DynamicModuleCluster::onScheduled(uint64_t event_id) {
   if (in_module_cluster_ != nullptr && config_->on_cluster_scheduled_ != nullptr) {
     config_->on_cluster_scheduled_(this, in_module_cluster_, event_id);
@@ -379,6 +393,31 @@ Upstream::HostsPerLocalityConstSharedPtr buildHostsPerLocality(const Upstream::H
     locality_hosts.push_back(std::move(h));
   }
   return std::make_shared<Upstream::HostsPerLocalityImpl>(std::move(locality_hosts), false);
+}
+
+// Build a LocalityWeights vector from a locality weights map keyed by Locality.
+// The order of weights follows the order of localities in the HostsPerLocality.
+Upstream::LocalityWeightsConstSharedPtr buildLocalityWeights(
+    const Upstream::HostsPerLocality& hosts_per_locality,
+    const absl::node_hash_map<envoy::config::core::v3::Locality, uint32_t, Upstream::LocalityHash,
+                              Upstream::LocalityEqualTo>& locality_weights_map) {
+  auto weights = std::make_shared<Upstream::LocalityWeights>();
+  weights->reserve(hosts_per_locality.get().size());
+  for (uint32_t i = 0; i < hosts_per_locality.get().size(); ++i) {
+    const auto& hosts = hosts_per_locality.get()[i];
+    if (!hosts.empty()) {
+      const auto& locality = hosts.front()->locality();
+      auto it = locality_weights_map.find(locality);
+      if (it != locality_weights_map.end()) {
+        weights->push_back(it->second);
+      } else {
+        weights->push_back(1); // Default weight if not found
+      }
+    } else {
+      weights->push_back(1); // Default weight for empty locality
+    }
+  }
+  return weights;
 }
 } // namespace
 
@@ -477,10 +516,18 @@ bool DynamicModuleCluster::addHosts(
   }
 
   auto hosts_per_locality = buildHostsPerLocality(*all_hosts);
+  auto hosts_per_locality_for_weights = hosts_per_locality; // Keep a copy for weights calculation
+
+  // Build locality weights if they were set for this priority.
+  Upstream::LocalityWeightsConstSharedPtr locality_weights;
+  auto it = priority_locality_weights_.find(priority);
+  if (it != priority_locality_weights_.end()) {
+    locality_weights = buildLocalityWeights(*hosts_per_locality_for_weights, it->second);
+  }
 
   priority_set_.updateHosts(
-      priority, Upstream::HostSetImpl::partitionHosts(all_hosts, std::move(hosts_per_locality)), {},
-      added_hosts, {}, absl::nullopt, absl::nullopt);
+      priority, Upstream::HostSetImpl::partitionHosts(all_hosts, std::move(hosts_per_locality)),
+      locality_weights, added_hosts, {}, absl::nullopt, absl::nullopt);
 
   ENVOY_LOG(debug, "Added {} hosts to dynamic module cluster at priority {}.", result_hosts.size(),
             priority);
@@ -517,9 +564,18 @@ bool DynamicModuleCluster::updateHostHealth(Upstream::HostSharedPtr host,
       if (h.get() == host.get()) {
         auto all_hosts = std::make_shared<Upstream::HostVector>(hosts);
         auto hosts_per_locality = buildHostsPerLocality(*all_hosts);
+        auto hosts_per_locality_for_weights = hosts_per_locality; // Keep a copy for weights calculation
+
+        // Build locality weights if they were set for this priority.
+        Upstream::LocalityWeightsConstSharedPtr locality_weights;
+        auto it = priority_locality_weights_.find(p);
+        if (it != priority_locality_weights_.end()) {
+          locality_weights = buildLocalityWeights(*hosts_per_locality_for_weights, it->second);
+        }
+
         priority_set_.updateHosts(
-            p, Upstream::HostSetImpl::partitionHosts(all_hosts, std::move(hosts_per_locality)), {},
-            {}, {}, absl::nullopt, absl::nullopt);
+            p, Upstream::HostSetImpl::partitionHosts(all_hosts, std::move(hosts_per_locality)),
+            locality_weights, {}, {}, absl::nullopt, absl::nullopt);
         ENVOY_LOG(debug, "Updated health status for host to {} at priority {}.",
                   static_cast<int>(health_status), p);
         return true;
@@ -594,10 +650,18 @@ size_t DynamicModuleCluster::removeHosts(const std::vector<Upstream::HostSharedP
   }
 
   auto hosts_per_locality = buildHostsPerLocality(*remaining_hosts);
+  auto hosts_per_locality_for_weights = hosts_per_locality; // Keep a copy for weights calculation
+
+  // Build locality weights if they were set for priority 0.
+  Upstream::LocalityWeightsConstSharedPtr locality_weights;
+  auto it = priority_locality_weights_.find(0);
+  if (it != priority_locality_weights_.end()) {
+    locality_weights = buildLocalityWeights(*hosts_per_locality_for_weights, it->second);
+  }
 
   priority_set_.updateHosts(
-      0, Upstream::HostSetImpl::partitionHosts(remaining_hosts, std::move(hosts_per_locality)), {},
-      {}, removed_hosts, absl::nullopt, absl::nullopt);
+      0, Upstream::HostSetImpl::partitionHosts(remaining_hosts, std::move(hosts_per_locality)),
+      locality_weights, {}, removed_hosts, absl::nullopt, absl::nullopt);
 
   ENVOY_LOG(debug, "Removed {} hosts from dynamic module cluster.", removed_hosts.size());
   return removed_hosts.size();

@@ -44,7 +44,7 @@
 // SDK downstream users.
 // 2. In the future, after the stable ABI is established, we may want to decouple the ABI version
 // from Envoy's versioning scheme.
-#define ENVOY_DYNAMIC_MODULES_ABI_VERSION "v0.1.0"
+#define ENVOY_DYNAMIC_MODULES_ABI_VERSION "v0.2.0"
 
 #ifdef __cplusplus
 #include <cstdbool>
@@ -9523,6 +9523,28 @@ envoy_dynamic_module_callback_cluster_find_host_by_address(
  */
 void envoy_dynamic_module_callback_cluster_pre_init_complete(
     envoy_dynamic_module_type_cluster_envoy_ptr cluster_envoy_ptr);
+
+/**
+ * envoy_dynamic_module_callback_cluster_set_locality_weights sets per locality load balancing
+ * weights for the given priority. Each locality_strings[i] is a serialized Locality
+ * (e.g. "region/zone/sub_zone") matching hosts previously added via
+ * envoy_dynamic_module_callback_cluster_add_hosts; weights[i] is the locality load balancing weight
+ * (>= 1). Optional; if never called, the cluster behaves as if no locality weights are set
+ * (all localities receive equal weight).
+ *
+ * @param cluster_envoy_ptr is the pointer to the Envoy cluster.
+ * @param priority is the priority level for which to set locality weights.
+ * @param locality_strings is the array of locality string representations ("region/zone/sub_zone").
+ * Each entry is owned by the module. An entry with length 0 indicates no locality for that index.
+ * @param weights is the array of locality load balancing weights (>= 1).
+ * @param count is the number of (locality_string, weight) pairs.
+ * @return true if all localities were found and weights were set, false if any locality string
+ * does not match a known locality or if the count is 0 (no-op case returns true).
+ */
+bool envoy_dynamic_module_callback_cluster_set_locality_weights(
+    envoy_dynamic_module_type_cluster_envoy_ptr cluster_envoy_ptr, uint32_t priority,
+    const envoy_dynamic_module_type_module_buffer* locality_strings, const uint32_t* weights,
+    size_t count);
 
 /**
  * envoy_dynamic_module_callback_cluster_lb_get_healthy_host_count returns the number of healthy

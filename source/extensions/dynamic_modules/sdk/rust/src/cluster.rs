@@ -327,6 +327,19 @@ pub trait EnvoyCluster: Send + Sync {
   /// routing traffic to this cluster.
   fn pre_init_complete(&self);
 
+  /// Set per-locality load balancing weights for the given priority.
+  ///
+  /// Each locality is represented as "(region, zone, sub_zone)" matching hosts previously added.
+  /// Each weight must be >= 1. Optional; if never called, all localities receive equal weight.
+  ///
+  /// Returns true if all localities were found and weights were set, false if any locality
+  /// does not match a known locality or if the weights slice is empty (no-op case returns true).
+  fn set_locality_weights(
+    &self,
+    priority: u32,
+    localities_and_weights: &[((String, String, String), u32)],
+  ) -> bool;
+
   /// Add multiple hosts to the cluster with per-host locality and metadata.
   ///
   /// Each address must be in `ip:port` format (e.g., `127.0.0.1:8080`).
@@ -1020,6 +1033,42 @@ impl EnvoyCluster for EnvoyClusterImpl {
   fn pre_init_complete(&self) {
     unsafe {
       abi::envoy_dynamic_module_callback_cluster_pre_init_complete(self.raw);
+    }
+  }
+
+  fn set_locality_weights(
+    &self,
+    priority: u32,
+    localities_and_weights: &[((String, String, String), u32)],
+  ) -> bool {
+    if localities_and_weights.is_empty() {
+      // No localities to set is not an error, just a no-op.
+      return true;
+    }
+
+    // Build locality strings and weights arrays.
+    let mut locality_strings: Vec<abi::envoy_dynamic_module_type_module_buffer> = Vec::new();
+    let mut weights: Vec<u32> = Vec::new();
+
+    for ((region, zone, sub_zone), weight) in localities_and_weights {
+      // Format locality as "region/zone/sub_zone"
+      let locality_str = if region.is_empty() && zone.is_empty() && sub_zone.is_empty() {
+        String::new()
+      } else {
+        format!("{}/{}/{}", region, zone, sub_zone)
+      };
+      locality_strings.push(str_to_module_buffer(&locality_str));
+      weights.push(*weight);
+    }
+
+    unsafe {
+      abi::envoy_dynamic_module_callback_cluster_set_locality_weights(
+        self.raw,
+        priority,
+        locality_strings.as_ptr(),
+        weights.as_ptr(),
+        localities_and_weights.len(),
+      )
     }
   }
 

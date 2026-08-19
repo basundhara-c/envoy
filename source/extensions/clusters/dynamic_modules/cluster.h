@@ -340,6 +340,11 @@ public:
   Upstream::HostSharedPtr findHost(void* raw_host_ptr);
   Upstream::HostSharedPtr findHostByAddress(const std::string& address);
   void preInitComplete();
+  // Per-priority locality weights: map from Locality to load-balancing weight.
+  using LocalityWeightsMap =
+      absl::node_hash_map<envoy::config::core::v3::Locality, uint32_t, Upstream::LocalityHash,
+                          Upstream::LocalityEqualTo>;
+  bool setLocalityWeights(uint32_t priority, const LocalityWeightsMap& locality_weights_map);
 
   /**
    * Called when an event is scheduled via DynamicModuleClusterScheduler::commit.
@@ -484,6 +489,9 @@ private:
   // HTTP callout tracking.
   uint64_t next_callout_id_ = 1; // 0 is reserved as an invalid id.
   absl::flat_hash_map<uint64_t, std::unique_ptr<HttpCalloutCallback>> http_callouts_;
+
+  // Per-priority locality weights. Key is priority, value is a map from Locality to weight.
+  absl::flat_hash_map<uint32_t, LocalityWeightsMap> priority_locality_weights_;
 };
 
 /**

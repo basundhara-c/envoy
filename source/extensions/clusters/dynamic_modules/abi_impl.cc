@@ -236,6 +236,70 @@ void envoy_dynamic_module_callback_cluster_pre_init_complete(
   getCluster(cluster_envoy_ptr)->preInitComplete();
 }
 
+bool envoy_dynamic_module_callback_cluster_set_locality_weights(
+    envoy_dynamic_module_type_cluster_envoy_ptr cluster_envoy_ptr, uint32_t priority,
+    const envoy_dynamic_module_type_module_buffer* locality_strings, const uint32_t* weights,
+    size_t count) {
+  if (!Envoy::Thread::MainThread::isMainOrTestThread()) {
+    IS_ENVOY_BUG("envoy_dynamic_module_callback_cluster_set_locality_weights must be called on the "
+                 "main thread");
+    return false;
+  }
+  if (cluster_envoy_ptr == nullptr || locality_strings == nullptr || weights == nullptr) {
+    return false;
+  }
+  if (count == 0) {
+    // No localities to set is not an error, just a no-op.
+    return true;
+  }
+
+  auto cluster = getCluster(cluster_envoy_ptr);
+
+  // Parse locality strings and build the map from Locality to weight.
+  Envoy::Extensions::Clusters::DynamicModules::DynamicModuleCluster::LocalityWeightsMap
+      locality_weights_map;
+
+  for (size_t i = 0; i < count; ++i) {
+    // Parse the locality string format: "region/zone/sub_zone"
+    std::string locality_str(locality_strings[i].ptr, locality_strings[i].length);
+    if (locality_str.empty()) {
+      // Empty locality string is invalid
+      return false;
+    }
+
+    // Parse the locality string: split by '/'
+    auto locality = std::make_shared<envoy::config::core::v3::Locality>();
+    size_t pos = 0;
+    size_t slash_pos = locality_str.find('/', pos);
+    if (slash_pos != std::string::npos) {
+      locality->set_region(locality_str.substr(pos, slash_pos - pos));
+      pos = slash_pos + 1;
+    } else {
+      locality->set_region(locality_str);
+      locality_weights_map[*locality] = weights[i];
+      continue;
+    }
+
+    slash_pos = locality_str.find('/', pos);
+    if (slash_pos != std::string::npos) {
+      locality->set_zone(locality_str.substr(pos, slash_pos - pos));
+      pos = slash_pos + 1;
+    } else {
+      locality->set_zone(locality_str);
+      locality_weights_map[*locality] = weights[i];
+      continue;
+    }
+
+    if (pos < locality_str.length()) {
+      locality->set_sub_zone(locality_str.substr(pos));
+    }
+
+    locality_weights_map[*locality] = weights[i];
+  }
+
+  return cluster->setLocalityWeights(priority, locality_weights_map);
+}
+
 size_t envoy_dynamic_module_callback_cluster_lb_get_healthy_host_count(
     envoy_dynamic_module_type_cluster_lb_envoy_ptr lb_envoy_ptr, uint32_t priority) {
   if (lb_envoy_ptr == nullptr) {
