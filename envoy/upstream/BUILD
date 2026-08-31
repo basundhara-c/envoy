@@ -145,6 +145,19 @@ envoy_cc_library(
 )
 
 envoy_cc_library(
+    name = "resource_manager_factory_interface",
+    hdrs = ["resource_manager_factory.h"],
+    deps = [
+        "//envoy/common:resource_interface",
+        "//envoy/config:typed_config_interface",
+        "//envoy/runtime:runtime_interface",
+        "//envoy/server:factory_context_interface",
+        "//envoy/stats:stats_interface",
+        "//source/common/protobuf",
+    ],
+)
+
+envoy_cc_library(
     name = "thread_local_cluster_interface",
     hdrs = ["thread_local_cluster.h"],
     deps = [

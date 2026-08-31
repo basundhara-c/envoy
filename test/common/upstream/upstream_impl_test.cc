@@ -15,9 +15,11 @@
 #include "envoy/http/client_codec_factory.h"
 #include "envoy/http/codec.h"
 #include "envoy/network/address.h"
+#include "envoy/registry/registry.h"
 #include "envoy/stats/scope.h"
 #include "envoy/upstream/cluster_manager.h"
 #include "envoy/upstream/health_check_host_monitor.h"
+#include "envoy/upstream/resource_manager_factory.h"
 #include "envoy/upstream/upstream.h"
 
 #include "source/common/config/metadata.h"
@@ -4892,6 +4894,107 @@ public:
     return nullptr;
   }
 };
+
+// A ResourceLimit that always denies, used to prove a factory-produced override gates a dimension.
+class DenyAllResourceLimit : public ResourceLimit {
+public:
+  bool canCreate() override { return false; }
+  void inc() override {}
+  void dec() override {}
+  void decBy(uint64_t) override {}
+  uint64_t max() override { return 0; }
+  uint64_t count() const override { return 0; }
+};
+
+// Test circuit breaker factory: produces an always-deny limit for the single dimension named in its
+// string config, and opts out (returns nullptr) of every other dimension.
+class TestCircuitBreakerFactory : public CircuitBreakerFactory {
+public:
+  std::string name() const override { return "envoy.circuit_breakers.test"; }
+  ProtobufTypes::MessagePtr createEmptyConfigProto() override {
+    return std::make_unique<Protobuf::StringValue>();
+  }
+  Envoy::ResourceLimitPtr
+  createResourceLimit(const Protobuf::Message& config, const CircuitBreakerResourceParams& params,
+                      Server::Configuration::ServerFactoryContext&) override {
+    const std::string& target = dynamic_cast<const Protobuf::StringValue&>(config).value();
+    if (target == dimensionName(params.resource)) {
+      return std::make_unique<DenyAllResourceLimit>();
+    }
+    return nullptr;
+  }
+
+private:
+  static std::string dimensionName(CircuitBreakerResource resource) {
+    switch (resource) {
+    case CircuitBreakerResource::Connections:
+      return "connections";
+    case CircuitBreakerResource::PendingRequests:
+      return "pending_requests";
+    case CircuitBreakerResource::Requests:
+      return "requests";
+    case CircuitBreakerResource::ConnectionPools:
+      return "connection_pools";
+    }
+    return "";
+  }
+};
+
+constexpr absl::string_view circuit_breaker_extension_yaml = R"EOF(
+    name: name
+    connect_timeout: 0.25s
+    type: STATIC
+    lb_policy: ROUND_ROBIN
+    load_assignment:
+      endpoints:
+        - lb_endpoints:
+            - endpoint:
+                address:
+                  socket_address:
+                    address: 127.0.0.1
+                    port_value: 1234
+    circuit_breakers:
+      thresholds:
+      - priority: DEFAULT
+        resource_limit_configs:
+        - name: {}
+          typed_config:
+            "@type": type.googleapis.com/google.protobuf.StringValue
+            value: {}
+  )EOF";
+
+// A factory-produced limit overrides its target dimension while other dimensions keep the built-in
+// counter.
+TEST_F(ClusterInfoImplTest, CircuitBreakerResourceLimitOverride) {
+  TestCircuitBreakerFactory factory;
+  Registry::InjectFactory<CircuitBreakerFactory> registered(factory);
+
+  auto cluster = makeCluster(
+      fmt::format(circuit_breaker_extension_yaml, "envoy.circuit_breakers.test", "requests"));
+  auto& rm = cluster->info()->resourceManager(ResourcePriority::Default);
+  EXPECT_FALSE(rm.requests().canCreate());
+  EXPECT_TRUE(rm.connections().canCreate());
+  EXPECT_TRUE(rm.pendingRequests().canCreate());
+  EXPECT_TRUE(rm.connectionPools().canCreate());
+}
+
+// An unknown factory name is rejected at config load.
+TEST_F(ClusterInfoImplTest, CircuitBreakerUnknownFactory) {
+  EXPECT_THROW_WITH_REGEX(makeCluster(fmt::format(circuit_breaker_extension_yaml,
+                                                  "envoy.circuit_breakers.missing", "requests")),
+                          EnvoyException, "Didn't find a registered circuit breaker factory");
+}
+
+// An extension that applies to no supported dimension (for example one targeting retries) is
+// rejected rather than silently ignored.
+TEST_F(ClusterInfoImplTest, CircuitBreakerRetriesUnsupported) {
+  TestCircuitBreakerFactory factory;
+  Registry::InjectFactory<CircuitBreakerFactory> registered(factory);
+
+  EXPECT_THROW_WITH_REGEX(makeCluster(fmt::format(circuit_breaker_extension_yaml,
+                                                  "envoy.circuit_breakers.test", "retries")),
+                          EnvoyException, "the retries dimension is not supported");
+}
 
 TEST_F(ClusterInfoImplTest, BufferHighWatermarkTimeoutConfigured) {
   const std::string yaml = R"EOF(

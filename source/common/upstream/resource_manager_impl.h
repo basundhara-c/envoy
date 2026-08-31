@@ -110,12 +110,35 @@ public:
     }
   }
 
+  // Installs a custom ResourceLimit for a dimension, produced by a CircuitBreakerFactory extension.
+  // When set, the corresponding accessor returns it instead of the built-in counter. Must be called
+  // at construction time, before the manager is shared across worker threads. The retries dimension
+  // is not pluggable and has no override.
+  void setConnectionsOverride(ResourceLimitPtr override) {
+    connections_override_ = std::move(override);
+  }
+  void setPendingRequestsOverride(ResourceLimitPtr override) {
+    pending_requests_override_ = std::move(override);
+  }
+  void setRequestsOverride(ResourceLimitPtr override) { requests_override_ = std::move(override); }
+  void setConnectionPoolsOverride(ResourceLimitPtr override) {
+    connection_pools_override_ = std::move(override);
+  }
+
   // Upstream::ResourceManager
-  ResourceLimit& connections() override { return connections_; }
-  ResourceLimit& pendingRequests() override { return pending_requests_; }
-  ResourceLimit& requests() override { return requests_; }
+  ResourceLimit& connections() override {
+    return connections_override_ != nullptr ? *connections_override_ : connections_;
+  }
+  ResourceLimit& pendingRequests() override {
+    return pending_requests_override_ != nullptr ? *pending_requests_override_ : pending_requests_;
+  }
+  ResourceLimit& requests() override {
+    return requests_override_ != nullptr ? *requests_override_ : requests_;
+  }
   ResourceLimit& retries() override { return retries_; }
-  ResourceLimit& connectionPools() override { return connection_pools_; }
+  ResourceLimit& connectionPools() override {
+    return connection_pools_override_ != nullptr ? *connection_pools_override_ : connection_pools_;
+  }
   uint64_t maxConnectionsPerHost() override { return max_connections_per_host_; }
 
 private:
@@ -278,6 +301,12 @@ private:
   ManagedResourceImpl connection_pools_;
   uint64_t max_connections_per_host_;
   RetryBudgetImpl retries_;
+  // Optional custom limits from CircuitBreakerFactory extensions. Null means the built-in counter
+  // for that dimension is used.
+  ResourceLimitPtr connections_override_;
+  ResourceLimitPtr pending_requests_override_;
+  ResourceLimitPtr requests_override_;
+  ResourceLimitPtr connection_pools_override_;
 };
 
 using ResourceManagerImplPtr = std::unique_ptr<ResourceManagerImpl>;

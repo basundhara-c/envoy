@@ -35,6 +35,7 @@
 #include "envoy/ssl/context_manager.h"
 #include "envoy/stats/scope.h"
 #include "envoy/upstream/health_checker.h"
+#include "envoy/upstream/resource_manager_factory.h"
 #include "envoy/upstream/upstream.h"
 
 #include "source/common/common/dns_utils.h"
@@ -1345,7 +1346,8 @@ ClusterInfoImpl::ClusterInfoImpl(
       resource_managers_(
           config, runtime, name_, *stats_scope_,
           factory_context.serverFactoryContext().clusterManager().clusterCircuitBreakersStatNames(),
-          factory_context.serverFactoryContext().mainThreadDispatcher()),
+          factory_context.serverFactoryContext().mainThreadDispatcher(),
+          factory_context.serverFactoryContext()),
       maintenance_mode_runtime_key_(absl::StrCat("upstream.maintenance_mode.", name_)),
       upstream_local_address_selector_(
           THROW_OR_RETURN_VALUE(createUpstreamLocalAddressSelector(config, bind_config),
@@ -2182,8 +2184,9 @@ ClusterInfoImpl::ResourceManagers::ResourceManagers(
     const envoy::config::cluster::v3::Cluster& config, Runtime::Loader& runtime,
     const std::string& cluster_name, Stats::Scope& stats_scope,
     const ClusterCircuitBreakersStatNames& circuit_breakers_stat_names,
-    Event::Dispatcher& dispatcher)
-    : circuit_breakers_stat_names_(circuit_breakers_stat_names), dispatcher_(dispatcher) {
+    Event::Dispatcher& dispatcher, Server::Configuration::ServerFactoryContext& server_context)
+    : circuit_breakers_stat_names_(circuit_breakers_stat_names), dispatcher_(dispatcher),
+      server_context_(server_context) {
   managers_[enumToInt(ResourcePriority::Default)] = THROW_OR_RETURN_VALUE(
       load(config, runtime, cluster_name, stats_scope, envoy::config::core::v3::DEFAULT),
       ResourceManagerImplPtr);
@@ -2363,12 +2366,95 @@ ClusterInfoImpl::ResourceManagers::load(const envoy::config::cluster::v3::Cluste
       max_connections_per_host = per_host_it->max_connections().value();
     }
   }
-  return std::make_unique<ResourceManagerImpl>(
+  ClusterCircuitBreakersStats cb_stats = ClusterInfoImpl::generateCircuitBreakersStats(
+      stats_scope, priority_stat_name, track_remaining, circuit_breakers_stat_names_);
+  auto manager = std::make_unique<ResourceManagerImpl>(
       runtime, runtime_prefix, max_connections, max_pending_requests, max_requests, max_retries,
-      max_connection_pools, max_connections_per_host,
-      ClusterInfoImpl::generateCircuitBreakersStats(stats_scope, priority_stat_name,
-                                                    track_remaining, circuit_breakers_stat_names_),
-      budget_percent, budget_interval, min_retry_concurrency, dispatcher_);
+      max_connection_pools, max_connections_per_host, cb_stats, budget_percent, budget_interval,
+      min_retry_concurrency, dispatcher_);
+
+  // Install any custom circuit-breaker resource-limit extensions. Each configured extension is
+  // consulted for every pluggable dimension; where it returns a limit, that limit replaces the
+  // built-in counter. Retries are not pluggable.
+  if (it != thresholds.cend() && !it->resource_limit_configs().empty()) {
+    struct DimensionSpec {
+      Upstream::CircuitBreakerResource resource;
+      uint64_t max;
+      std::string runtime_key;
+      Stats::Gauge& open_gauge;
+      Stats::Gauge& remaining_gauge;
+    };
+    const std::array<DimensionSpec, 4> dimensions{{
+        {Upstream::CircuitBreakerResource::Connections, max_connections,
+         runtime_prefix + "max_connections", cb_stats.cx_open_, cb_stats.remaining_cx_},
+        {Upstream::CircuitBreakerResource::PendingRequests, max_pending_requests,
+         runtime_prefix + "max_pending_requests", cb_stats.rq_pending_open_,
+         cb_stats.remaining_pending_},
+        {Upstream::CircuitBreakerResource::Requests, max_requests, runtime_prefix + "max_requests",
+         cb_stats.rq_open_, cb_stats.remaining_rq_},
+        {Upstream::CircuitBreakerResource::ConnectionPools, max_connection_pools,
+         runtime_prefix + "max_connection_pools", cb_stats.cx_pool_open_,
+         cb_stats.remaining_cx_pools_},
+    }};
+    // Guards against two extensions claiming the same dimension.
+    std::array<bool, 4> overridden{};
+
+    for (const auto& resource_limit_config : it->resource_limit_configs()) {
+      auto* factory = Config::Utility::getAndCheckFactoryByName<Upstream::CircuitBreakerFactory>(
+          resource_limit_config.name(), /*is_optional=*/true);
+      if (factory == nullptr) {
+        return absl::InvalidArgumentError(
+            fmt::format("Didn't find a registered circuit breaker factory named '{}'",
+                        resource_limit_config.name()));
+      }
+      ProtobufTypes::MessagePtr message = factory->createEmptyConfigProto();
+      RETURN_IF_NOT_OK(Config::Utility::translateOpaqueConfig(
+          resource_limit_config.typed_config(), server_context_.messageValidationVisitor(),
+          *message));
+
+      bool applied_any = false;
+      for (size_t i = 0; i < dimensions.size(); ++i) {
+        const DimensionSpec& dim = dimensions[i];
+        Upstream::CircuitBreakerResourceParams params{
+            dim.resource, dim.max, runtime, dim.runtime_key, dim.open_gauge, dim.remaining_gauge};
+        ResourceLimitPtr custom = factory->createResourceLimit(*message, params, server_context_);
+        if (custom == nullptr) {
+          continue;
+        }
+        if (overridden[i]) {
+          return absl::InvalidArgumentError(fmt::format(
+              "Multiple circuit breaker extensions provided a limit for the same resource "
+              "dimension in cluster '{}'",
+              cluster_name));
+        }
+        overridden[i] = true;
+        applied_any = true;
+        switch (dim.resource) {
+        case Upstream::CircuitBreakerResource::Connections:
+          manager->setConnectionsOverride(std::move(custom));
+          break;
+        case Upstream::CircuitBreakerResource::PendingRequests:
+          manager->setPendingRequestsOverride(std::move(custom));
+          break;
+        case Upstream::CircuitBreakerResource::Requests:
+          manager->setRequestsOverride(std::move(custom));
+          break;
+        case Upstream::CircuitBreakerResource::ConnectionPools:
+          manager->setConnectionPoolsOverride(std::move(custom));
+          break;
+        }
+      }
+
+      // Reject rather than silently no-op when an extension applies to no supported dimension.
+      if (!applied_any) {
+        return absl::InvalidArgumentError(
+            fmt::format("Circuit breaker extension '{}' in cluster '{}': the retries dimension is "
+                        "not supported",
+                        resource_limit_config.name(), cluster_name));
+      }
+    }
+  }
+  return manager;
 }
 
 PriorityStateManager::PriorityStateManager(ClusterImplBase& cluster,

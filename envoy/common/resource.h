@@ -1,11 +1,10 @@
 #pragma once
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 
 #include "envoy/common/pure.h"
-
-#pragma once
 
 namespace Envoy {
 
@@ -48,5 +47,6 @@ public:
 };
 
 using ResourceLimitOptRef = std::optional<std::reference_wrapper<ResourceLimit>>;
+using ResourceLimitPtr = std::unique_ptr<ResourceLimit>;
 
 } // namespace Envoy
