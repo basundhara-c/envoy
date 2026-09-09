@@ -35,6 +35,7 @@
 #include "test/test_common/environment.h"
 #include "test/test_common/logging.h"
 #include "test/test_common/status_utility.h"
+#include "test/test_common/test_runtime.h"
 #include "test/test_common/utility.h"
 
 #include "gtest/gtest.h"
@@ -285,6 +286,133 @@ TEST_F(SslContextImplTest, TestCrlSharedContextLifetime) {
   // Delete the second context; the cache entry is released with no crash.
   factory_b.reset();
   EXPECT_EQ(crl_cache->size(), 0);
+}
+
+// Validates that TLS contexts referencing identical certificate and key content
+// share a single parsed certificate chain and a single parsed private key, rather
+// than each re-parsing the PEM, when the cache is enabled.
+TEST_F(SslContextImplTest, TestClientCertAndKeySharedAcrossContexts) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.cache_parsed_tls_certificates", "true"}});
+
+  const std::string yaml = R"EOF(
+  common_tls_context:
+    tls_certificates:
+      certificate_chain:
+        filename: "{{ test_rundir }}/test/common/tls/test_data/unittest_cert.pem"
+      private_key:
+        filename: "{{ test_rundir }}/test/common/tls/test_data/unittest_key.pem"
+  )EOF";
+
+  envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext tls_context1;
+  TestUtility::loadFromYaml(TestEnvironment::substitute(yaml), tls_context1);
+  auto cfg1 = *ClientContextConfigImpl::create(tls_context1, factory_context_);
+
+  envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext tls_context2;
+  TestUtility::loadFromYaml(TestEnvironment::substitute(yaml), tls_context2);
+  auto cfg2 = *ClientContextConfigImpl::create(tls_context2, factory_context_);
+
+  auto ctx1 = *manager_.createSslClientContext(*store_.rootScope(), *cfg1);
+  auto cleanup1 = cleanUpHelper(ctx1);
+  auto ctx2 = *manager_.createSslClientContext(*store_.rootScope(), *cfg2);
+  auto cleanup2 = cleanUpHelper(ctx2);
+  ASSERT_NE(ctx1, nullptr);
+  ASSERT_NE(ctx2, nullptr);
+
+  auto cert_chain_cache = getCertChainCache(server_factory_context_.singletonManager());
+  auto private_key_cache = getPrivateKeyCache(server_factory_context_.singletonManager());
+  EXPECT_EQ(cert_chain_cache->size(), 1);
+  EXPECT_EQ(private_key_cache->size(), 1);
+
+  // A context with a different certificate and key adds a second entry to each.
+  const std::string other_yaml = R"EOF(
+  common_tls_context:
+    tls_certificates:
+      certificate_chain:
+        filename: "{{ test_rundir }}/test/common/tls/test_data/san_dns_cert.pem"
+      private_key:
+        filename: "{{ test_rundir }}/test/common/tls/test_data/san_dns_key.pem"
+  )EOF";
+  envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext tls_context3;
+  TestUtility::loadFromYaml(TestEnvironment::substitute(other_yaml), tls_context3);
+  auto cfg3 = *ClientContextConfigImpl::create(tls_context3, factory_context_);
+  auto ctx3 = *manager_.createSslClientContext(*store_.rootScope(), *cfg3);
+  auto cleanup3 = cleanUpHelper(ctx3);
+  ASSERT_NE(ctx3, nullptr);
+  EXPECT_EQ(cert_chain_cache->size(), 2);
+  EXPECT_EQ(private_key_cache->size(), 2);
+}
+
+// With the cache disabled (the default), identical certificate and key content is
+// parsed per context and the caches are never populated.
+TEST_F(SslContextImplTest, TestClientCertAndKeyNotSharedWhenDisabled) {
+  const std::string yaml = R"EOF(
+  common_tls_context:
+    tls_certificates:
+      certificate_chain:
+        filename: "{{ test_rundir }}/test/common/tls/test_data/unittest_cert.pem"
+      private_key:
+        filename: "{{ test_rundir }}/test/common/tls/test_data/unittest_key.pem"
+  )EOF";
+
+  envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext tls_context1;
+  TestUtility::loadFromYaml(TestEnvironment::substitute(yaml), tls_context1);
+  auto cfg1 = *ClientContextConfigImpl::create(tls_context1, factory_context_);
+  auto ctx1 = *manager_.createSslClientContext(*store_.rootScope(), *cfg1);
+  auto cleanup1 = cleanUpHelper(ctx1);
+  ASSERT_NE(ctx1, nullptr);
+
+  EXPECT_EQ(getCertChainCache(server_factory_context_.singletonManager())->size(), 0);
+  EXPECT_EQ(getPrivateKeyCache(server_factory_context_.singletonManager())->size(), 0);
+}
+
+// Validates the lifetime of certificate and key material shared between two TLS
+// contexts: tearing down one context leaves the shared material valid for the
+// other, and destroying both releases the cache entries. Primarily intended to
+// run under ASAN/TSAN.
+TEST_F(SslContextImplTest, TestClientCertAndKeySharedContextLifetime) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.cache_parsed_tls_certificates", "true"}});
+
+  const std::string yaml = R"EOF(
+  common_tls_context:
+    tls_certificates:
+      certificate_chain:
+        filename: "{{ test_rundir }}/test/common/tls/test_data/unittest_cert.pem"
+      private_key:
+        filename: "{{ test_rundir }}/test/common/tls/test_data/unittest_key.pem"
+  )EOF";
+
+  envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext tls_context1;
+  TestUtility::loadFromYaml(TestEnvironment::substitute(yaml), tls_context1);
+  auto cfg1 = *ClientContextConfigImpl::create(tls_context1, factory_context_);
+  envoy::extensions::transport_sockets::tls::v3::UpstreamTlsContext tls_context2;
+  TestUtility::loadFromYaml(TestEnvironment::substitute(yaml), tls_context2);
+  auto cfg2 = *ClientContextConfigImpl::create(tls_context2, factory_context_);
+
+  auto ctx1 = *manager_.createSslClientContext(*store_.rootScope(), *cfg1);
+  auto ctx2 = *manager_.createSslClientContext(*store_.rootScope(), *cfg2);
+  ASSERT_NE(ctx1, nullptr);
+  ASSERT_NE(ctx2, nullptr);
+
+  auto cert_chain_cache = getCertChainCache(server_factory_context_.singletonManager());
+  auto private_key_cache = getPrivateKeyCache(server_factory_context_.singletonManager());
+  EXPECT_EQ(cert_chain_cache->size(), 1);
+  EXPECT_EQ(private_key_cache->size(), 1);
+
+  // Destroying one context must leave the shared material valid for the other.
+  manager_.removeContext(ctx1);
+  ctx1.reset();
+  EXPECT_EQ(cert_chain_cache->size(), 1);
+  EXPECT_EQ(private_key_cache->size(), 1);
+
+  // Destroying the second releases the cache entries with no crash.
+  manager_.removeContext(ctx2);
+  ctx2.reset();
+  EXPECT_EQ(cert_chain_cache->size(), 0);
+  EXPECT_EQ(private_key_cache->size(), 0);
 }
 
 // Envoy's default cipher preference is server's.
