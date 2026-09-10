@@ -123,6 +123,7 @@ envoy_cc_dyn_module_test(
         "//test/extensions/dynamic_modules/test_data/c:bootstrap_no_op",
         "//test/extensions/dynamic_modules/test_data/rust:bootstrap_admin_handler_test",
         "//test/extensions/dynamic_modules/test_data/rust:bootstrap_cluster_lifecycle_test",
+        "//test/extensions/dynamic_modules/test_data/rust:bootstrap_config_names_test",
         "//test/extensions/dynamic_modules/test_data/rust:bootstrap_file_watcher_test",
         "//test/extensions/dynamic_modules/test_data/rust:bootstrap_function_registry_test",
         "//test/extensions/dynamic_modules/test_data/rust:bootstrap_http_combined_test",

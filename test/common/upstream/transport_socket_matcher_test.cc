@@ -785,6 +785,30 @@ transport_socket:
   EXPECT_FALSE(matcher_->usesFilterState());
 }
 
+TEST_F(TransportSocketMatcherTest, MatchNames) {
+  init({R"EOF(
+name: "match_a"
+match:
+  hasSidecar: "true"
+transport_socket:
+  name: "foo"
+  typed_config:
+    "@type": type.googleapis.com/envoy.config.core.v3.Node
+    id: "a"
+ )EOF",
+        R"EOF(
+name: "match_b"
+match:
+  hasSidecar: "false"
+transport_socket:
+  name: "foo"
+  typed_config:
+    "@type": type.googleapis.com/envoy.config.core.v3.Node
+    id: "b"
+ )EOF"});
+  EXPECT_THAT(matcher_->matchNames(), testing::UnorderedElementsAre("match_a", "match_b"));
+}
+
 } // namespace
 } // namespace Upstream
 } // namespace Envoy

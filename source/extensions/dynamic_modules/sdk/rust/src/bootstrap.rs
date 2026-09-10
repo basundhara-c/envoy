@@ -9,6 +9,16 @@ use crate::{
 use mockall::*;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
+/// The kind of config object a name from [`EnvoyBootstrapExtensionConfig::iterate_config_names`]
+/// refers to.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigNameKind {
+  FilterChain,
+  Cluster,
+  TransportSocketMatch,
+  Secret,
+}
+
 /// EnvoyBootstrapExtensionConfig is the Envoy-side bootstrap extension configuration.
 /// This is a handle to the Envoy configuration object.
 #[automock]
@@ -247,6 +257,11 @@ pub trait EnvoyBootstrapExtensionConfig {
   ///
   /// This should be called at most once. Subsequent calls are no-ops and return `false`.
   fn enable_listener_lifecycle(&self) -> bool;
+
+  /// Returns the names of live config objects, each tagged with its kind: the active listeners'
+  /// filter chains, the clusters and their transport socket matches, and the active dynamic TLS
+  /// certificate secrets. This must be called on the main thread.
+  fn config_names(&self) -> Vec<(ConfigNameKind, String)>;
 }
 
 /// EnvoyBootstrapExtension is the Envoy-side bootstrap extension.
@@ -1162,6 +1177,40 @@ impl EnvoyBootstrapExtensionConfig for EnvoyBootstrapExtensionConfigImpl {
     unsafe {
       abi::envoy_dynamic_module_callback_bootstrap_extension_enable_listener_lifecycle(self.raw)
     }
+  }
+
+  fn config_names(&self) -> Vec<(ConfigNameKind, String)> {
+    extern "C" fn config_name_trampoline(
+      kind: abi::envoy_dynamic_module_type_bootstrap_config_name_kind,
+      name: abi::envoy_dynamic_module_type_envoy_buffer,
+      user_data: *mut std::ffi::c_void,
+    ) {
+      let names = unsafe { &mut *(user_data as *mut Vec<(ConfigNameKind, String)>) };
+      let name_slice =
+        unsafe { crate::ffi_helpers::slice_from_raw_or_empty(name.ptr as *const u8, name.length) };
+      let name_str = std::str::from_utf8(name_slice).unwrap_or("");
+      let kind = match kind {
+        abi::envoy_dynamic_module_type_bootstrap_config_name_kind::FilterChain => {
+          ConfigNameKind::FilterChain
+        }
+        abi::envoy_dynamic_module_type_bootstrap_config_name_kind::Cluster => ConfigNameKind::Cluster,
+        abi::envoy_dynamic_module_type_bootstrap_config_name_kind::TransportSocketMatch => {
+          ConfigNameKind::TransportSocketMatch
+        }
+        abi::envoy_dynamic_module_type_bootstrap_config_name_kind::Secret => ConfigNameKind::Secret,
+      };
+      names.push((kind, name_str.to_owned()));
+    }
+
+    let mut names: Vec<(ConfigNameKind, String)> = Vec::new();
+    unsafe {
+      abi::envoy_dynamic_module_callback_bootstrap_extension_iterate_config_names(
+        self.raw,
+        Some(config_name_trampoline),
+        &mut names as *mut _ as *mut std::ffi::c_void,
+      );
+    }
+    names
   }
 }
 

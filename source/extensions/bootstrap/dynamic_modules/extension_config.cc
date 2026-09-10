@@ -1,7 +1,11 @@
 #include "source/extensions/bootstrap/dynamic_modules/extension_config.h"
 
+#include <algorithm>
+#include <vector>
+
 #include "source/common/common/assert.h"
 
+#include "absl/container/flat_hash_set.h"
 #include "absl/strings/str_cat.h"
 
 namespace Envoy {
@@ -112,6 +116,66 @@ void DynamicModuleBootstrapExtensionConfig::onListenerRemoval(const std::string&
     on_bootstrap_extension_listener_removal_(thisAsVoidPtr(), in_module_config_,
                                              {listener_name.data(), listener_name.size()});
   }
+}
+
+void DynamicModuleBootstrapExtensionConfig::iterateConfigNames(
+    absl::FunctionRef<void(envoy_dynamic_module_type_bootstrap_config_name_kind, absl::string_view)>
+        emit) {
+  // The cluster manager is not available until the server is initialized.
+  if (!server_initialized_) {
+    return;
+  }
+  // Filter chains across all active listeners.
+  if (listener_manager_ != nullptr) {
+    for (Network::ListenerConfig& listener :
+         listener_manager_->listeners(Server::ListenerManager::ListenerState::ACTIVE)) {
+      for (absl::string_view name : listener.filterChainManager().filterChainNames()) {
+        emit(envoy_dynamic_module_type_bootstrap_config_name_kind_FilterChain, name);
+      }
+    }
+  }
+  // Clusters (union). A transport socket match is emitted only when present in every cluster that
+  // has matches, so a match is observed only once it has landed in all the shared clusters that
+  // carry per-endpoint matches. Clusters with no matches do not constrain the intersection.
+  std::vector<std::vector<absl::string_view>> per_cluster_matches;
+  for (const auto& [cluster_name, cluster] :
+       context_.clusterManager().clusters().active_clusters_) {
+    emit(envoy_dynamic_module_type_bootstrap_config_name_kind_Cluster, cluster_name);
+    per_cluster_matches.push_back(cluster.get().info()->transportSocketMatcher().matchNames());
+  }
+  for (absl::string_view match_name : transportSocketMatchIntersection(per_cluster_matches)) {
+    emit(envoy_dynamic_module_type_bootstrap_config_name_kind_TransportSocketMatch, match_name);
+  }
+  // Active dynamic TLS certificate secrets.
+  for (const std::string& secret_name :
+       context_.secretManager().dynamicActiveTlsCertificateSecretNames()) {
+    emit(envoy_dynamic_module_type_bootstrap_config_name_kind_Secret, secret_name);
+  }
+}
+
+std::vector<absl::string_view>
+DynamicModuleBootstrapExtensionConfig::transportSocketMatchIntersection(
+    const std::vector<std::vector<absl::string_view>>& per_cluster_matches) {
+  std::vector<absl::string_view> result;
+  bool initialized = false;
+  for (const auto& cluster_matches : per_cluster_matches) {
+    // A cluster with no matches carries no per-endpoint matches, so it does not constrain the
+    // intersection.
+    if (cluster_matches.empty()) {
+      continue;
+    }
+    if (!initialized) {
+      result.assign(cluster_matches.begin(), cluster_matches.end());
+      initialized = true;
+      continue;
+    }
+    const absl::flat_hash_set<absl::string_view> names(cluster_matches.begin(),
+                                                       cluster_matches.end());
+    result.erase(std::remove_if(result.begin(), result.end(),
+                                [&names](absl::string_view n) { return !names.contains(n); }),
+                 result.end());
+  }
+  return result;
 }
 
 void DynamicModuleBootstrapExtensionConfig::onScheduled(uint64_t event_id) {

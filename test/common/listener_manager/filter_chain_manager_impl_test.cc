@@ -560,5 +560,31 @@ TEST(ListenerInfoImplTest, FromConfig) {
   info.typedMetadata();
 }
 
+TEST_P(FilterChainManagerImplTest, FilterChainNames) {
+  std::vector<envoy::config::listener::v3::FilterChain> filter_chain_messages;
+  for (int i = 0; i < 2; i++) {
+    envoy::config::listener::v3::FilterChain new_filter_chain = filter_chain_template_;
+    new_filter_chain.set_name(absl::StrCat("fc_", i));
+    new_filter_chain.mutable_filter_chain_match()->mutable_destination_port()->set_value(10000 + i);
+    filter_chain_messages.push_back(std::move(new_filter_chain));
+  }
+  EXPECT_CALL(filter_chain_factory_builder_, buildFilterChain(_, _, _))
+      .WillRepeatedly(testing::Invoke(
+          [](const envoy::config::listener::v3::FilterChain& fc, FilterChainFactoryContextCreator&,
+             bool) -> absl::StatusOr<Network::DrainableFilterChainSharedPtr> {
+            auto chain = std::make_shared<NiceMock<Network::MockFilterChain>>();
+            ON_CALL(*chain, name()).WillByDefault(Return(fc.name()));
+            return chain;
+          }));
+  EXPECT_OK(filter_chain_manager_->addFilterChains(
+      GetParam() ? &matcher_ : nullptr,
+      std::vector<const envoy::config::listener::v3::FilterChain*>{&filter_chain_messages[0],
+                                                                   &filter_chain_messages[1]},
+      nullptr, filter_chain_factory_builder_, *filter_chain_manager_, nullptr, empty_config_source_,
+      dummy_fcds_callbacks_));
+  EXPECT_THAT(filter_chain_manager_->filterChainNames(),
+              testing::UnorderedElementsAre("fc_0", "fc_1"));
+}
+
 } // namespace Server
 } // namespace Envoy

@@ -242,6 +242,14 @@ __attribute__((weak)) void envoy_dynamic_module_callback_bootstrap_extension_ite
                "not implemented in this context");
 }
 
+__attribute__((weak)) void
+envoy_dynamic_module_callback_bootstrap_extension_iterate_config_names(
+    envoy_dynamic_module_type_bootstrap_extension_config_envoy_ptr,
+    envoy_dynamic_module_type_bootstrap_config_name_iterator_fn, void*) {
+  IS_ENVOY_BUG("envoy_dynamic_module_callback_bootstrap_extension_iterate_config_names: "
+               "not implemented in this context");
+}
+
 __attribute__((weak)) void envoy_dynamic_module_callback_bootstrap_extension_iterate_gauges(
     envoy_dynamic_module_type_bootstrap_extension_envoy_ptr,
     envoy_dynamic_module_type_gauge_iterator_fn, void*) {

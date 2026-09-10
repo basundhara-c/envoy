@@ -15971,6 +15971,55 @@ bool envoy_dynamic_module_callback_early_header_mutation_get_filter_state_bytes(
     envoy_dynamic_module_type_early_header_mutation_context_envoy_ptr envoy_ptr,
     envoy_dynamic_module_type_module_buffer key, envoy_dynamic_module_type_envoy_buffer* result);
 
+// ===== Bootstrap config name iteration =====
+//
+// Lets a bootstrap extension enumerate the names of live config objects (filter chains, clusters,
+// transport socket matches, TLS certificate secrets) directly from the server's managers, instead
+// of scraping the admin /config_dump endpoint.
+
+// ----- Types -----
+
+/**
+ * envoy_dynamic_module_type_bootstrap_config_name_kind identifies which kind of config object a
+ * name emitted by envoy_dynamic_module_callback_bootstrap_extension_iterate_config_names refers to.
+ */
+typedef enum {
+  envoy_dynamic_module_type_bootstrap_config_name_kind_FilterChain = 0,
+  envoy_dynamic_module_type_bootstrap_config_name_kind_Cluster = 1,
+  envoy_dynamic_module_type_bootstrap_config_name_kind_TransportSocketMatch = 2,
+  envoy_dynamic_module_type_bootstrap_config_name_kind_Secret = 3,
+} envoy_dynamic_module_type_bootstrap_config_name_kind;
+
+/**
+ * The callback type invoked once per config-object name during iteration.
+ *
+ * @param kind is the kind of config object the name refers to.
+ * @param name is the name of the config object. The buffer is owned by Envoy and is valid only for
+ * the duration of this call.
+ * @param user_data is the user data passed to the iterate function.
+ */
+typedef void (*envoy_dynamic_module_type_bootstrap_config_name_iterator_fn)(
+    envoy_dynamic_module_type_bootstrap_config_name_kind kind,
+    envoy_dynamic_module_type_envoy_buffer name, void* user_data);
+
+// ----- Callbacks -----
+
+/**
+ * envoy_dynamic_module_callback_bootstrap_extension_iterate_config_names is called by the module to
+ * enumerate the names of live config objects. Envoy walks the active listeners' filter chains, the
+ * cluster manager's clusters and their transport socket matches, and the dynamic active TLS
+ * certificate secrets, invoking iterator_fn once per name with its kind. Must be called on the main
+ * thread.
+ *
+ * @param extension_config_envoy_ptr is the pointer to the DynamicModuleBootstrapExtensionConfig
+ * object.
+ * @param iterator_fn is the callback function to call for each config-object name.
+ * @param user_data is the user data to pass to the callback function.
+ */
+void envoy_dynamic_module_callback_bootstrap_extension_iterate_config_names(
+    envoy_dynamic_module_type_bootstrap_extension_config_envoy_ptr extension_config_envoy_ptr,
+    envoy_dynamic_module_type_bootstrap_config_name_iterator_fn iterator_fn, void* user_data);
+
 #ifdef __cplusplus
 }
 #endif

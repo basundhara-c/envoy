@@ -190,6 +190,19 @@ void envoy_dynamic_module_callback_bootstrap_extension_iterate_gauges(
                            });
 }
 
+void envoy_dynamic_module_callback_bootstrap_extension_iterate_config_names(
+    envoy_dynamic_module_type_bootstrap_extension_config_envoy_ptr extension_config_envoy_ptr,
+    envoy_dynamic_module_type_bootstrap_config_name_iterator_fn iterator_fn, void* user_data) {
+  auto* config = static_cast<DynamicModuleBootstrapExtensionConfig*>(extension_config_envoy_ptr);
+  config->iterateConfigNames(
+      [iterator_fn, user_data](envoy_dynamic_module_type_bootstrap_config_name_kind kind,
+                               absl::string_view name) {
+        envoy_dynamic_module_type_envoy_buffer name_buffer{const_cast<char*>(name.data()),
+                                                           name.size()};
+        iterator_fn(kind, name_buffer, user_data);
+      });
+}
+
 // -------------------- Stats Definition and Update Callbacks --------------------
 
 } // extern "C"

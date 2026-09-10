@@ -614,6 +614,17 @@ makeCidrListEntry(const std::string& cidr, const T& data, absl::Status& creation
 
 }; // namespace
 
+std::vector<absl::string_view> FilterChainManagerImpl::filterChainNames() const {
+  std::vector<absl::string_view> names;
+  names.reserve(fc_contexts_.size());
+  for (const auto& [proto, chain] : fc_contexts_) {
+    if (!chain->name().empty()) {
+      names.push_back(chain->name());
+    }
+  }
+  return names;
+}
+
 const Network::FilterChain*
 FilterChainManagerImpl::findFilterChain(const Network::ConnectionSocket& socket,
                                         const StreamInfo::StreamInfo& info) const {

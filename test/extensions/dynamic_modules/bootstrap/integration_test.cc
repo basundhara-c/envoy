@@ -1,3 +1,5 @@
+#include "envoy/config/bootstrap/v3/bootstrap.pb.h"
+
 #include "test/integration/http_integration.h"
 #include "test/test_common/environment.h"
 #include "test/test_common/logging.h"
@@ -375,6 +377,27 @@ TEST_P(DynamicModulesBootstrapAwsSigningIntegrationTest, SignedCalloutGatingInit
   EXPECT_LOG_CONTAINS(
       "info", "Bootstrap signed callout test completed successfully!",
       initializeWithBootstrapExtension(testDataDir("rust"), "bootstrap_signed_callout_test"));
+}
+
+// Verifies a Rust bootstrap extension can enumerate live config-object names by kind via
+// config_names() and run the per-workload readiness subset check on them.
+TEST_P(DynamicModulesBootstrapIntegrationTest, ConfigNamesRust) {
+  // Name the default listener's filter chain so the module observes it by name.
+  config_helper_.addConfigModifier([](envoy::config::bootstrap::v3::Bootstrap& bootstrap) {
+    auto* listener = bootstrap.mutable_static_resources()->mutable_listeners(0);
+    listener->mutable_filter_chains(0)->set_name("workload_chain");
+  });
+  initializeWithBootstrapExtension(testDataDir("rust"), "bootstrap_config_names_test");
+
+  BufferingStreamDecoderPtr response = IntegrationUtil::makeSingleRequest(
+      lookupPort("admin"), "GET", "/config_names", "", Http::CodecType::HTTP1, version_);
+  EXPECT_TRUE(response->complete());
+  EXPECT_EQ("200", response->headers().getStatusValue());
+  // The static upstream cluster and the named filter chain are observed, and the subset check
+  // passes.
+  EXPECT_THAT(response->body(), testing::HasSubstr("cluster_0"));
+  EXPECT_THAT(response->body(), testing::HasSubstr("workload_chain"));
+  EXPECT_THAT(response->body(), testing::HasSubstr("readiness=satisfied"));
 }
 
 } // namespace DynamicModules

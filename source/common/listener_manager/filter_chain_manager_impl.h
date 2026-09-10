@@ -217,6 +217,7 @@ public:
   // Network::FilterChainManager
   const Network::FilterChain* findFilterChain(const Network::ConnectionSocket& socket,
                                               const StreamInfo::StreamInfo& info) const override;
+  std::vector<absl::string_view> filterChainNames() const override;
 
   // Add all filter chains into this manager. During the lifetime of FilterChainManagerImpl this
   // should be called at most once.
