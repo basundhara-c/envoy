@@ -564,6 +564,10 @@ public:
   const Upstream::HostVector* hostsAdded() const { return hosts_added_; }
   const Upstream::HostVector* hostsRemoved() const { return hosts_removed_; }
 
+  // Hosts whose health changed in the current membership update, or nullptr outside the callback or
+  // when unknown (a priority without persistent partitions, or a wholesale replace).
+  const Upstream::HostVector* healthChangedHosts();
+
   // Returns the priority set that this load balancer subscribes to for host membership updates.
   const Upstream::PrioritySet& memberUpdatePrioritySet() const { return priority_set_; }
 
@@ -602,6 +606,12 @@ private:
 
   // Membership update callback handle.
   Envoy::Common::CallbackHandlePtr member_update_cb_;
+  // Records the priorities each membership update touched, which fire before the member callback.
+  Envoy::Common::CallbackHandlePtr priority_update_cb_;
+  std::vector<uint32_t> updated_priorities_;
+  // Built on the first healthChangedHosts() call of a membership update callback.
+  std::optional<Upstream::HostVector> health_changed_hosts_;
+  bool health_changed_hosts_known_{false};
 
   friend class DynamicModuleClusterTestPeer;
 };

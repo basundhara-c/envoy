@@ -2150,6 +2150,8 @@ public:
   PersistentViews hosts;
   std::vector<PersistentViews> localities;
   bool has_local_locality{false};
+  // See PersistentHostSetImpl::healthChangedHosts().
+  std::optional<HostVector> health_changed;
 };
 
 const PartitionsSnapshotImpl& asImpl(const PersistentHostPartitionsSnapshot& snapshot) {
@@ -2298,7 +2300,7 @@ struct PersistentHostSetImpl::Partitions {
     }
   }
 
-  std::shared_ptr<const PartitionsSnapshotImpl> snapshot() const {
+  std::shared_ptr<PartitionsSnapshotImpl> snapshot() const {
     auto snapshot = std::make_shared<PartitionsSnapshotImpl>();
     snapshot->hosts = {all.hosts(), health.healthy.hosts(), health.degraded.hosts(),
                        health.excluded.hosts()};
@@ -2403,12 +2405,14 @@ void PersistentHostSetImpl::updateHosts(PrioritySet::UpdateHostsParams&& update_
   partitions_snapshot_ = nullptr;
   if (update_hosts_params.persistent_partitions != nullptr) {
     adopted_snapshot_ = std::move(update_hosts_params.persistent_partitions);
+    health_changed_ = asImpl(*adopted_snapshot_).health_changed;
     source_ = Source::Snapshot;
     flat_ = emptyHostsParams();
     flat_built_ = false;
     update_hosts_params = emptyHostsParams();
   } else {
     adopted_snapshot_ = nullptr;
+    health_changed_ = std::nullopt;
     source_ = Source::Flat;
     flat_ = update_hosts_params;
     flat_built_ = true;
@@ -2430,7 +2434,8 @@ void PersistentHostSetImpl::applyMembershipDelta(const HostVector& hosts_added,
   for (const auto& host : hosts_added) {
     partitions_->add(host);
   }
-  publishPartitionsChange(hosts_added, hosts_removed, weighted_priority_health,
+  // Added hosts arrive with their current health, so no other host's health changed.
+  publishPartitionsChange(hosts_added, hosts_removed, {}, weighted_priority_health,
                           overprovisioning_factor);
 }
 
@@ -2439,7 +2444,7 @@ bool PersistentHostSetImpl::applyHostHealthChange(const HostSharedPtr& host) {
   if (!partitions_->reclassify(host)) {
     return false;
   }
-  publishPartitionsChange({}, {}, std::nullopt, std::nullopt);
+  publishPartitionsChange({}, {}, {host}, std::nullopt, std::nullopt);
   return true;
 }
 
@@ -2490,16 +2495,20 @@ const PrioritySet::UpdateHostsParams& PersistentHostSetImpl::flat() const {
 }
 
 PersistentHostPartitionsSnapshotConstSharedPtr PersistentHostSetImpl::currentSnapshot() const {
-  if (source_ == Source::Snapshot) {
+  switch (source_) {
+  case Source::Flat:
+    return nullptr;
+  case Source::Partitions:
+    if (partitions_snapshot_ == nullptr) {
+      auto snapshot = partitions_->snapshot();
+      snapshot->health_changed = health_changed_;
+      partitions_snapshot_ = std::move(snapshot);
+    }
+    return partitions_snapshot_;
+  case Source::Snapshot:
     return adopted_snapshot_;
   }
-  if (source_ == Source::Flat) {
-    return nullptr;
-  }
-  if (partitions_snapshot_ == nullptr) {
-    partitions_snapshot_ = partitions_->snapshot();
-  }
-  return partitions_snapshot_;
+  PANIC_DUE_TO_CORRUPT_ENUM;
 }
 
 void PersistentHostSetImpl::syncPartitions() {
@@ -2514,8 +2523,9 @@ void PersistentHostSetImpl::syncPartitions() {
 }
 
 void PersistentHostSetImpl::publishPartitionsChange(
-    const HostVector& hosts_added, const HostVector& hosts_removed,
+    const HostVector& hosts_added, const HostVector& hosts_removed, HostVector health_changed,
     std::optional<bool> weighted_priority_health, std::optional<uint32_t> overprovisioning_factor) {
+  health_changed_ = std::move(health_changed);
   source_ = Source::Partitions;
   partitions_snapshot_ = nullptr;
   flat_ = emptyHostsParams();
