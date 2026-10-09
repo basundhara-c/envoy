@@ -423,6 +423,8 @@ envoy_cc_library(
         # TODO(mattklein123): Move the clusters to extensions so they can be compiled out.
         ":upstream_includes",
         ":transport_socket_match_lib",
+        "//envoy/upstream:locality_lib",
+        "@abseil-cpp//absl/container:flat_hash_map",
         "@envoy_api//envoy/config/cluster/v3:pkg_cc_proto",
         "@envoy_api//envoy/config/core/v3:pkg_cc_proto",
         "//source/common/stats:deferred_creation",
@@ -442,6 +444,7 @@ envoy_cc_library(
         "//source/common/common:dns_utils_lib",
         "//source/common/common:empty_string",
         "//source/common/common:enum_to_int",
+        "//source/common/common:persistent_hash_map_lib",
         "//source/common/common:thread_lib",
         "//source/common/common:utility_lib",
         "//source/common/conn_pool:pending_stream_lib",

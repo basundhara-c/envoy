@@ -227,6 +227,9 @@ FALSE_RUNTIME_GUARD(envoy_reloadable_features_unified_mux);
 FALSE_RUNTIME_GUARD(envoy_reloadable_features_oauth2_use_gcm_encryption);
 // TODO: flip to true after sufficient testing.
 FALSE_RUNTIME_GUARD(envoy_reloadable_features_incremental_health_transition);
+// TODO: flip to true after sufficient testing. A cluster must also opt in through
+// MainPrioritySetImpl::setUsePersistentHostPartitions().
+FALSE_RUNTIME_GUARD(envoy_reloadable_features_persistent_host_partitions);
 // Used to track if runtime is initialized.
 FALSE_RUNTIME_GUARD(envoy_reloadable_features_runtime_initialized);
 // TODO(alyssawilk, renjietang) figure out what to do with this for optimal defaults
