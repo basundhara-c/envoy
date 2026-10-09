@@ -225,6 +225,8 @@ FALSE_RUNTIME_GUARD(envoy_reloadable_features_unified_mux);
 // after the rollout is complete) to be protected against CVE-2026-47775.
 // TODO: flip the default to true and remove the flag once the migration window has elapsed.
 FALSE_RUNTIME_GUARD(envoy_reloadable_features_oauth2_use_gcm_encryption);
+// TODO: flip to true after sufficient testing.
+FALSE_RUNTIME_GUARD(envoy_reloadable_features_incremental_health_transition);
 // Used to track if runtime is initialized.
 FALSE_RUNTIME_GUARD(envoy_reloadable_features_runtime_initialized);
 // TODO(alyssawilk, renjietang) figure out what to do with this for optimal defaults
