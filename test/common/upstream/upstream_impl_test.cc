@@ -5146,6 +5146,44 @@ TEST_F(PersistentHostPartitionsTest, NonEmptyFlatWorkerFlattensSnapshots) {
   EXPECT_EQ(2, worker_set.hostsPerLocality().get().size());
 }
 
+// Each update records which hosts' health changed, and snapshots carry that to workers.
+TEST_F(PersistentHostPartitionsTest, HealthChangedHostsFollowUpdates) {
+  const auto& host_set =
+      dynamic_cast<const PersistentHostSetImpl&>(*priority_set_.hostSetsPerPriority()[0]);
+  PrioritySetImpl worker;
+  worker.getOrCreateHostSet(0);
+  const auto publish = [&](const HostVector& added, const HostVector& removed) {
+    worker.updateHosts(0,
+                       PersistentHostSetImpl::snapshotUpdateHostsParams(
+                           priority_set_.hostSetsPerPriority()[0]->persistentPartitions()),
+                       nullptr, added, removed, std::nullopt, std::nullopt);
+    return &dynamic_cast<const PersistentHostSetImpl&>(*worker.hostSetsPerPriority()[0]);
+  };
+
+  members_ = {makeHost(1, "a"), makeHost(2, "b")};
+  priority_set_.updateHostsByDelta(0, members_, {});
+  ASSERT_TRUE(host_set.healthChangedHosts().has_value());
+  EXPECT_TRUE(host_set.healthChangedHosts()->empty());
+  const PersistentHostSetImpl* worker_set = publish(members_, {});
+  ASSERT_TRUE(worker_set->healthChangedHosts().has_value());
+  EXPECT_TRUE(worker_set->healthChangedHosts()->empty());
+
+  members_[1]->healthFlagSet(Host::HealthFlag::FAILED_ACTIVE_HC);
+  EXPECT_TRUE(priority_set_.applyHostHealthChange(0, members_[1]));
+  EXPECT_EQ(HostVector{members_[1]}, host_set.healthChangedHosts());
+  worker_set = publish({}, {});
+  EXPECT_EQ(HostVector{members_[1]}, worker_set->healthChangedHosts());
+
+  priority_set_.updateHostsByDelta(0, {}, {members_[0]});
+  EXPECT_TRUE(host_set.healthChangedHosts()->empty());
+
+  priority_set_.updateHosts(0,
+                            HostSetImpl::partitionHosts(std::make_shared<HostVector>(members_),
+                                                        groupByLocality(members_)),
+                            nullptr, {}, {}, std::nullopt, std::nullopt);
+  EXPECT_FALSE(host_set.healthChangedHosts().has_value());
+}
+
 // Adds 100 hosts to P0 and 50 hosts to P1.
 class TestMultiPriorityBatchUpdateCb : public PrioritySet::BatchUpdateCb {
 public:

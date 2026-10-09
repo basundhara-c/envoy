@@ -818,6 +818,10 @@ public:
   // Returns false if `host` is not in this set.
   bool applyHostHealthChange(const HostSharedPtr& host);
 
+  // Hosts whose health changed in the update that produced the current partitions, or nullopt when
+  // that update replaced the partitions wholesale.
+  const std::optional<HostVector>& healthChangedHosts() const { return health_changed_; }
+
   // Returns update params that carry only `snapshot`.
   static PrioritySet::UpdateHostsParams
   snapshotUpdateHostsParams(PersistentHostPartitionsSnapshotConstSharedPtr snapshot);
@@ -838,6 +842,7 @@ private:
   void syncPartitions();
   // Marks `partitions_` current, drops the stale flat views, and runs the update callbacks.
   void publishPartitionsChange(const HostVector& hosts_added, const HostVector& hosts_removed,
+                               HostVector health_changed,
                                std::optional<bool> weighted_priority_health,
                                std::optional<uint32_t> overprovisioning_factor);
 
@@ -849,6 +854,7 @@ private:
   // Flat views: the source after a full update, otherwise a cache built on first read.
   mutable PrioritySet::UpdateHostsParams flat_;
   mutable bool flat_built_{true};
+  std::optional<HostVector> health_changed_;
   Source source_{Source::Flat};
 };
 
