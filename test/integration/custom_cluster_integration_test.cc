@@ -3,6 +3,7 @@
 
 #include "source/common/network/address_impl.h"
 #include "source/common/upstream/load_balancer_context_base.h"
+#include "source/common/upstream/upstream_impl.h"
 
 #include "test/config/utility.h"
 #include "test/integration/clusters/cluster_factory_config.pb.h"
@@ -43,6 +44,7 @@ public:
         config.set_priority(10);
         config.set_address(Network::Test::getLoopbackAddressString(ipVersion()));
         config.set_port_value(fake_upstreams_[UpstreamIndex]->localAddress()->ip()->port());
+        config.set_use_persistent_host_partitions(use_persistent_host_partitions_);
         std::ignore = cluster_type.mutable_typed_config()->PackFrom(config);
       } else {
         test::integration::clusters::CustomStaticConfig2 config;
@@ -53,13 +55,25 @@ public:
       }
 
       cluster_0->mutable_cluster_type()->CopyFrom(cluster_type);
+      bootstrap.mutable_cluster_manager()->set_enable_deferred_cluster_creation(
+          deferred_cluster_creation_);
     });
     HttpIntegrationTest::initialize();
     test_server_->waitForGauge("cluster_manager.active_clusters", testing::Ge(1));
   }
 
   Network::Address::IpVersion ipVersion() const { return version_; }
+
+  // The main-thread host set at the cluster's configured priority.
+  const Upstream::HostSet& clusterHostSet() {
+    const auto& cluster_maps = test_server_->server().clusterManager().clusters();
+    const auto& cluster_ref = cluster_maps.active_clusters_.find("cluster_0")->second;
+    return *cluster_ref.get().prioritySet().hostSetsPerPriority()[10];
+  }
+
   bool cluster_provided_lb_{};
+  bool use_persistent_host_partitions_{};
+  bool deferred_cluster_creation_{};
 };
 
 INSTANTIATE_TEST_SUITE_P(IpVersions, CustomClusterIntegrationTest,
@@ -90,6 +104,50 @@ TEST_P(CustomClusterIntegrationTest, TestCustomConfig) {
   EXPECT_EQ(1, host_set->hosts().size());
   EXPECT_EQ(1, host_set->healthyHosts().size());
   EXPECT_EQ(10, host_set->priority());
+}
+
+// A cluster opted into persistent host partitions adds its host as a delta, and the host serves
+// traffic with the same membership accounting as the flat path.
+TEST_P(CustomClusterIntegrationTest, PersistentHostPartitionsServeTraffic) {
+  config_helper_.addRuntimeOverride("envoy.reloadable_features.persistent_host_partitions", "true");
+  use_persistent_host_partitions_ = true;
+  testRouterHeaderOnlyRequestAndResponse(nullptr, UpstreamIndex);
+
+  const Upstream::HostSet& host_set = clusterHostSet();
+  EXPECT_NE(nullptr, dynamic_cast<const Upstream::PersistentHostSetImpl*>(&host_set));
+  // The delta left the partitions current, so workers were handed a snapshot.
+  EXPECT_NE(nullptr, host_set.persistentPartitions());
+  EXPECT_EQ(1, host_set.hostCount());
+  EXPECT_EQ(1, host_set.healthyHostCount());
+  EXPECT_EQ(1, host_set.hosts().size());
+  EXPECT_EQ(1, host_set.healthyHosts().size());
+  EXPECT_EQ(1, test_server_->gauge("cluster.cluster_0.membership_total")->value());
+  EXPECT_EQ(1, test_server_->gauge("cluster.cluster_0.membership_healthy")->value());
+}
+
+// With deferred cluster creation, workers build the cluster from the initialization object on first
+// use. That object carries the persistent snapshot, so the host must still serve traffic.
+TEST_P(CustomClusterIntegrationTest, PersistentHostPartitionsWithDeferredClusterCreation) {
+  config_helper_.addRuntimeOverride("envoy.reloadable_features.persistent_host_partitions", "true");
+  use_persistent_host_partitions_ = true;
+  deferred_cluster_creation_ = true;
+  testTwoRequests(false);
+
+  const Upstream::HostSet& host_set = clusterHostSet();
+  EXPECT_NE(nullptr, dynamic_cast<const Upstream::PersistentHostSetImpl*>(&host_set));
+  EXPECT_NE(nullptr, host_set.persistentPartitions());
+  EXPECT_EQ(1, test_server_->gauge("cluster.cluster_0.membership_total")->value());
+}
+
+// With the runtime flag off, the cluster's opt-in is ignored and it keeps the flat host sets.
+TEST_P(CustomClusterIntegrationTest, PersistentHostPartitionsIgnoredWhenFlagOff) {
+  use_persistent_host_partitions_ = true;
+  testRouterHeaderOnlyRequestAndResponse(nullptr, UpstreamIndex);
+
+  const Upstream::HostSet& host_set = clusterHostSet();
+  EXPECT_EQ(nullptr, dynamic_cast<const Upstream::PersistentHostSetImpl*>(&host_set));
+  EXPECT_EQ(1, host_set.hosts().size());
+  EXPECT_EQ(1, test_server_->gauge("cluster.cluster_0.membership_total")->value());
 }
 
 } // namespace

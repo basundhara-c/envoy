@@ -35,12 +35,14 @@
 #include "envoy/ssl/context_manager.h"
 #include "envoy/stats/scope.h"
 #include "envoy/upstream/health_checker.h"
+#include "envoy/upstream/locality.h"
 #include "envoy/upstream/upstream.h"
 
 #include "source/common/common/dns_utils.h"
 #include "source/common/common/empty_string.h"
 #include "source/common/common/enum_to_int.h"
 #include "source/common/common/fmt.h"
+#include "source/common/common/persistent_hash_map.h"
 #include "source/common/common/utility.h"
 #include "source/common/config/utility.h"
 #include "source/common/config/well_known_names.h"
@@ -69,6 +71,7 @@
 #include "source/common/upstream/locality_pool.h"
 #include "source/server/transport_socket_config_impl.h"
 
+#include "absl/container/flat_hash_map.h"
 #include "absl/container/node_hash_set.h"
 #include "absl/strings/str_cat.h"
 
@@ -973,7 +976,8 @@ HostSetImpl::updateHostsParams(HostVectorConstSharedPtr hosts,
                                         std::move(hosts_per_locality),
                                         std::move(healthy_hosts_per_locality),
                                         std::move(degraded_hosts_per_locality),
-                                        std::move(excluded_hosts_per_locality)};
+                                        std::move(excluded_hosts_per_locality),
+                                        nullptr};
 }
 
 PrioritySet::UpdateHostsParams HostSetImpl::updateHostsParams(const HostSet& host_set) {
@@ -1027,6 +1031,19 @@ void PrioritySetImpl::updateHosts(uint32_t priority, UpdateHostsParams&& update_
     cross_priority_host_map_ = std::move(cross_priority_host_map);
   }
 
+  // A worker copy of a persistent main-thread set takes the same representation while it is still
+  // empty. Otherwise it gets the flat views the snapshot describes.
+  if (update_hosts_params.persistent_partitions != nullptr && !use_persistent_host_partitions_) {
+    const bool empty = std::all_of(host_sets_.begin(), host_sets_.end(),
+                                   [](const auto& host_set) { return host_set->hostCount() == 0; });
+    if (empty) {
+      setPersistentHostSets(true);
+    } else {
+      update_hosts_params =
+          PersistentHostSetImpl::flatUpdateHostsParams(*update_hosts_params.persistent_partitions);
+    }
+  }
+
   // Ensure that we have a HostSet for the given priority.
   getOrCreateHostSet(priority, weighted_priority_health, overprovisioning_factor);
   static_cast<HostSetImpl*>(host_sets_[priority].get())
@@ -1049,6 +1066,65 @@ void PrioritySetImpl::batchHostUpdate(BatchUpdateCb& callback) {
   HostVector net_hosts_removed = filterHosts(scope.all_hosts_removed_, scope.all_hosts_added_);
 
   runUpdateCallbacks(net_hosts_added, net_hosts_removed);
+}
+
+void PrioritySetImpl::updateHostsByDelta(uint32_t priority, const HostVector& hosts_added,
+                                         const HostVector& hosts_removed,
+                                         std::optional<bool> weighted_priority_health,
+                                         std::optional<uint32_t> overprovisioning_factor) {
+  // A batch reports the net change of its full updates, which a delta applied here would bypass.
+  ASSERT(!batch_update_);
+  getOrCreateHostSet(priority, weighted_priority_health, overprovisioning_factor);
+  auto* host_set = dynamic_cast<PersistentHostSetImpl*>(host_sets_[priority].get());
+  if (host_set == nullptr) {
+    IS_ENVOY_BUG("host deltas require persistent host partitions");
+    return;
+  }
+  host_set->applyMembershipDelta(hosts_added, hosts_removed, weighted_priority_health,
+                                 overprovisioning_factor);
+  runUpdateCallbacks(hosts_added, hosts_removed);
+}
+
+bool PrioritySetImpl::applyHostHealthChange(uint32_t priority, const HostSharedPtr& host) {
+  if (priority >= host_sets_.size()) {
+    return false;
+  }
+  auto* host_set = dynamic_cast<PersistentHostSetImpl*>(host_sets_[priority].get());
+  if (host_set == nullptr || !host_set->applyHostHealthChange(host)) {
+    return false;
+  }
+  if (!batch_update_) {
+    runUpdateCallbacks({}, {});
+  }
+  return true;
+}
+
+HostSetImplPtr PrioritySetImpl::createHostSet(uint32_t priority,
+                                              std::optional<bool> weighted_priority_health,
+                                              std::optional<uint32_t> overprovisioning_factor) {
+  if (use_persistent_host_partitions_) {
+    return std::make_unique<PersistentHostSetImpl>(priority, weighted_priority_health,
+                                                   overprovisioning_factor);
+  }
+  return std::make_unique<HostSetImpl>(priority, weighted_priority_health, overprovisioning_factor);
+}
+
+void PrioritySetImpl::setPersistentHostSets(bool use_persistent) {
+  if (use_persistent == use_persistent_host_partitions_) {
+    return;
+  }
+  use_persistent_host_partitions_ = use_persistent;
+  for (size_t i = 0; i < host_sets_.size(); ++i) {
+    ASSERT(host_sets_[i]->hosts().empty());
+    HostSetImplPtr host_set = createHostSet(i, host_sets_[i]->weightedPriorityHealth(),
+                                            host_sets_[i]->overprovisioningFactor());
+    // Replacing the handle first unregisters from the old set while it is still alive.
+    host_sets_priority_update_cbs_[i] = host_set->addPriorityUpdateCb(
+        [this](uint32_t priority, const HostVector& hosts_added, const HostVector& hosts_removed) {
+          return runReferenceUpdateCallbacks(priority, hosts_added, hosts_removed);
+        });
+    host_sets_[i] = std::move(host_set);
+  }
 }
 
 void PrioritySetImpl::BatchUpdateScope::updateHosts(
@@ -1088,6 +1164,22 @@ void MainPrioritySetImpl::updateHosts(uint32_t priority, UpdateHostsParams&& upd
   PrioritySetImpl::updateHosts(priority, std::move(update_hosts_params), locality_weights,
                                hosts_added, hosts_removed, weighted_priority_health,
                                overprovisioning_factor);
+}
+
+void MainPrioritySetImpl::updateHostsByDelta(uint32_t priority, const HostVector& hosts_added,
+                                             const HostVector& hosts_removed,
+                                             std::optional<bool> weighted_priority_health,
+                                             std::optional<uint32_t> overprovisioning_factor) {
+  updateCrossPriorityHostMap(priority, hosts_added, hosts_removed);
+  PrioritySetImpl::updateHostsByDelta(priority, hosts_added, hosts_removed,
+                                      weighted_priority_health, overprovisioning_factor);
+}
+
+void MainPrioritySetImpl::setUsePersistentHostPartitions(bool use_persistent) {
+  const bool enabled =
+      use_persistent &&
+      Runtime::runtimeFeatureEnabled("envoy.reloadable_features.persistent_host_partitions");
+  setPersistentHostSets(enabled);
 }
 
 HostLookupMapConstSharedPtr MainPrioritySetImpl::crossPriorityHostMap() const {
@@ -1892,10 +1984,10 @@ ClusterImplBase::ClusterImplBase(const envoy::config::cluster::v3::Cluster& clus
         uint32_t excluded_hosts = 0;
         uint32_t hosts = 0;
         for (const auto& host_set : prioritySet().hostSetsPerPriority()) {
-          hosts += host_set->hosts().size();
-          healthy_hosts += host_set->healthyHosts().size();
-          degraded_hosts += host_set->degradedHosts().size();
-          excluded_hosts += host_set->excludedHosts().size();
+          hosts += host_set->hostCount();
+          healthy_hosts += host_set->healthyHostCount();
+          degraded_hosts += host_set->degradedHostCount();
+          excluded_hosts += host_set->excludedHostCount();
         }
         info_->endpointStats().membership_total_.set(hosts);
         info_->endpointStats().membership_healthy_.set(healthy_hosts);
@@ -2022,6 +2114,423 @@ PrioritySet::UpdateHostsParams HostSetImpl::applyHealthTransition(const HostSet&
                            std::move(healthy_hosts), std::move(healthy_per_locality),
                            std::move(degraded_hosts), std::move(degraded_per_locality),
                            std::move(excluded_hosts), std::move(excluded_per_locality));
+}
+
+namespace {
+
+// Empty views shared by every persistent host set, so stale flat vectors are released.
+const PrioritySet::UpdateHostsParams& emptyHostsParams() {
+  CONSTRUCT_ON_FIRST_USE(
+      PrioritySet::UpdateHostsParams,
+      PrioritySet::UpdateHostsParams{
+          std::make_shared<const HostVector>(), std::make_shared<const HealthyHostVector>(),
+          std::make_shared<const DegradedHostVector>(),
+          std::make_shared<const ExcludedHostVector>(), HostsPerLocalityImpl::empty(),
+          HostsPerLocalityImpl::empty(), HostsPerLocalityImpl::empty(),
+          HostsPerLocalityImpl::empty(), nullptr});
+}
+
+// A persistent set of hosts keyed by host. Copying it shares its nodes.
+using HostsByHost = PersistentHashMap<const Host*, HostSharedPtr>;
+
+// The all, healthy, degraded and excluded views of one host population, as persistent maps.
+struct PersistentViews {
+  HostsByHost all;
+  HostsByHost healthy;
+  HostsByHost degraded;
+  HostsByHost excluded;
+};
+
+// The only PersistentHostPartitionsSnapshot implementation. Copying a HostsByHost shares its
+// nodes, so a snapshot costs one copy per view and locality, not per host.
+class PartitionsSnapshotImpl : public PersistentHostPartitionsSnapshot {
+public:
+  PersistentViews hosts;
+  std::vector<PersistentViews> localities;
+  bool has_local_locality{false};
+};
+
+const PartitionsSnapshotImpl& asImpl(const PersistentHostPartitionsSnapshot& snapshot) {
+  return static_cast<const PartitionsSnapshotImpl&>(snapshot);
+}
+
+// One partition view, keyed by host. Adding or removing a host is O(log N) and copying the view is
+// an O(1) snapshot that later changes do not affect. Iteration order carries no meaning.
+class IndexedHosts {
+public:
+  size_t size() const { return hosts_.size(); }
+  bool contains(const Host* host) const { return hosts_.find(host) != nullptr; }
+  const HostsByHost& hosts() const { return hosts_; }
+
+  void add(const HostSharedPtr& host) { hosts_.insert(host.get(), host); }
+
+  void remove(const Host* host) { hosts_.erase(host); }
+
+  void setPresent(const HostSharedPtr& host, bool present) {
+    if (present) {
+      add(host);
+    } else {
+      remove(host.get());
+    }
+  }
+
+  void seed(const HostVector& hosts) {
+    hosts_ = HostsByHost();
+    for (const auto& host : hosts) {
+      add(host);
+    }
+  }
+
+private:
+  HostsByHost hosts_;
+};
+
+// The healthy, degraded and excluded views of one host population, classified the same way as
+// ClusterImplBase::partitionHostList.
+struct HealthViews {
+  void place(const HostSharedPtr& host) {
+    const Host::Health health = host->coarseHealth();
+    healthy.setPresent(host, health == Host::Health::Healthy);
+    degraded.setPresent(host, health == Host::Health::Degraded);
+    excluded.setPresent(host, excludeBasedOnHealthFlag(*host));
+  }
+
+  void remove(const Host* host) {
+    healthy.remove(host);
+    degraded.remove(host);
+    excluded.remove(host);
+  }
+
+  IndexedHosts healthy;
+  IndexedHosts degraded;
+  IndexedHosts excluded;
+};
+
+struct LocalityPartitions {
+  PersistentViews views() const {
+    return {all.hosts(), health.healthy.hosts(), health.degraded.hosts(), health.excluded.hosts()};
+  }
+
+  IndexedHosts all;
+  HealthViews health;
+};
+
+HostVector toHostVector(const HostsByHost& hosts) {
+  HostVector out;
+  out.reserve(hosts.size());
+  hosts.forEach([&out](const Host*, const HostSharedPtr& host) { out.push_back(host); });
+  return out;
+}
+
+} // namespace
+
+struct PersistentHostSetImpl::Partitions {
+  void add(const HostSharedPtr& host) {
+    all.add(host);
+    health.place(host);
+    if (track_localities) {
+      LocalityPartitions& bucket = localityFor(host->locality());
+      bucket.all.add(host);
+      bucket.health.place(host);
+    }
+  }
+
+  void remove(const HostSharedPtr& host) {
+    all.remove(host.get());
+    health.remove(host.get());
+    if (!track_localities) {
+      return;
+    }
+    const auto it = locality_index.find(host->locality());
+    if (it == locality_index.end()) {
+      return;
+    }
+    const size_t index = it->second;
+    LocalityPartitions& bucket = *localities[index];
+    bucket.all.remove(host.get());
+    bucket.health.remove(host.get());
+    eraseLocalityIfEmpty(index);
+  }
+
+  // Returns false if `host` is not a member.
+  bool reclassify(const HostSharedPtr& host) {
+    if (!all.contains(host.get())) {
+      return false;
+    }
+    health.place(host);
+    if (track_localities) {
+      const auto it = locality_index.find(host->locality());
+      if (it != locality_index.end()) {
+        localities[it->second]->health.place(host);
+      }
+    }
+    return true;
+  }
+
+  void seed(const PrioritySet::UpdateHostsParams& flat) {
+    all.seed(*flat.hosts);
+    health.healthy.seed(flat.healthy_hosts->get());
+    health.degraded.seed(flat.degraded_hosts->get());
+    health.excluded.seed(flat.excluded_hosts->get());
+    localities.clear();
+    locality_index.clear();
+    has_local_locality = flat.hosts_per_locality->hasLocalLocality();
+    const auto& buckets = flat.hosts_per_locality->get();
+    // A caller that gives hosts but no per-locality layout does not use localities, so deltas must
+    // not invent buckets for it either.
+    track_localities = flat.hosts->empty() || !buckets.empty();
+    const auto view = [](const HostsPerLocality& per_locality, size_t index) -> const HostVector& {
+      static const HostVector empty;
+      return index < per_locality.get().size() ? per_locality.get()[index] : empty;
+    };
+    for (size_t i = 0; i < buckets.size(); ++i) {
+      auto bucket = std::make_unique<LocalityPartitions>();
+      bucket->all.seed(buckets[i]);
+      bucket->health.healthy.seed(view(*flat.healthy_hosts_per_locality, i));
+      bucket->health.degraded.seed(view(*flat.degraded_hosts_per_locality, i));
+      bucket->health.excluded.seed(view(*flat.excluded_hosts_per_locality, i));
+      if (!buckets[i].empty()) {
+        locality_index.try_emplace(buckets[i].front()->locality(), i);
+      }
+      localities.push_back(std::move(bucket));
+    }
+  }
+
+  std::shared_ptr<const PartitionsSnapshotImpl> snapshot() const {
+    auto snapshot = std::make_shared<PartitionsSnapshotImpl>();
+    snapshot->hosts = {all.hosts(), health.healthy.hosts(), health.degraded.hosts(),
+                       health.excluded.hosts()};
+    snapshot->localities.reserve(localities.size());
+    for (const auto& bucket : localities) {
+      snapshot->localities.push_back(bucket->views());
+    }
+    snapshot->has_local_locality = has_local_locality;
+    return snapshot;
+  }
+
+  LocalityPartitions& localityFor(const envoy::config::core::v3::Locality& locality) {
+    const auto [it, inserted] = locality_index.try_emplace(locality, localities.size());
+    if (inserted) {
+      localities.push_back(std::make_unique<LocalityPartitions>());
+    }
+    return *localities[it->second];
+  }
+
+  // Drops an emptied bucket, keeping the order of the others. The local locality bucket stays
+  // first even when empty, as HostsPerLocality requires.
+  void eraseLocalityIfEmpty(size_t index) {
+    if (localities[index]->all.size() != 0 || (has_local_locality && index == 0)) {
+      return;
+    }
+    localities.erase(localities.begin() + index);
+    absl::erase_if(locality_index, [index](const auto& entry) { return entry.second == index; });
+    for (auto& [_, bucket_index] : locality_index) {
+      if (bucket_index > index) {
+        --bucket_index;
+      }
+    }
+  }
+
+  IndexedHosts all;
+  HealthViews health;
+  std::vector<std::unique_ptr<LocalityPartitions>> localities;
+  absl::flat_hash_map<envoy::config::core::v3::Locality, size_t, LocalityHash, LocalityEqualTo>
+      locality_index;
+  bool has_local_locality{false};
+  bool track_localities{true};
+};
+
+PersistentHostSetImpl::PersistentHostSetImpl(uint32_t priority,
+                                             std::optional<bool> weighted_priority_health,
+                                             std::optional<uint32_t> overprovisioning_factor)
+    : HostSetImpl(priority, weighted_priority_health, overprovisioning_factor),
+      partitions_(std::make_unique<Partitions>()), flat_(emptyHostsParams()) {}
+
+PersistentHostSetImpl::~PersistentHostSetImpl() = default;
+
+size_t PersistentHostSetImpl::hostCount() const {
+  switch (source_) {
+  case Source::Flat:
+    return flat_.hosts->size();
+  case Source::Partitions:
+    return partitions_->all.size();
+  case Source::Snapshot:
+    return asImpl(*adopted_snapshot_).hosts.all.size();
+  }
+  PANIC_DUE_TO_CORRUPT_ENUM;
+}
+
+size_t PersistentHostSetImpl::healthyHostCount() const {
+  switch (source_) {
+  case Source::Flat:
+    return flat_.healthy_hosts->get().size();
+  case Source::Partitions:
+    return partitions_->health.healthy.size();
+  case Source::Snapshot:
+    return asImpl(*adopted_snapshot_).hosts.healthy.size();
+  }
+  PANIC_DUE_TO_CORRUPT_ENUM;
+}
+
+size_t PersistentHostSetImpl::degradedHostCount() const {
+  switch (source_) {
+  case Source::Flat:
+    return flat_.degraded_hosts->get().size();
+  case Source::Partitions:
+    return partitions_->health.degraded.size();
+  case Source::Snapshot:
+    return asImpl(*adopted_snapshot_).hosts.degraded.size();
+  }
+  PANIC_DUE_TO_CORRUPT_ENUM;
+}
+
+size_t PersistentHostSetImpl::excludedHostCount() const {
+  switch (source_) {
+  case Source::Flat:
+    return flat_.excluded_hosts->get().size();
+  case Source::Partitions:
+    return partitions_->health.excluded.size();
+  case Source::Snapshot:
+    return asImpl(*adopted_snapshot_).hosts.excluded.size();
+  }
+  PANIC_DUE_TO_CORRUPT_ENUM;
+}
+
+PersistentHostPartitionsSnapshotConstSharedPtr PersistentHostSetImpl::persistentPartitions() const {
+  return currentSnapshot();
+}
+
+void PersistentHostSetImpl::updateHosts(PrioritySet::UpdateHostsParams&& update_hosts_params,
+                                        LocalityWeightsConstSharedPtr locality_weights,
+                                        const HostVector& hosts_added,
+                                        const HostVector& hosts_removed,
+                                        std::optional<bool> weighted_priority_health,
+                                        std::optional<uint32_t> overprovisioning_factor) {
+  partitions_snapshot_ = nullptr;
+  if (update_hosts_params.persistent_partitions != nullptr) {
+    adopted_snapshot_ = std::move(update_hosts_params.persistent_partitions);
+    source_ = Source::Snapshot;
+    flat_ = emptyHostsParams();
+    flat_built_ = false;
+    update_hosts_params = emptyHostsParams();
+  } else {
+    adopted_snapshot_ = nullptr;
+    source_ = Source::Flat;
+    flat_ = update_hosts_params;
+    flat_built_ = true;
+  }
+  HostSetImpl::updateHosts(std::move(update_hosts_params), std::move(locality_weights), hosts_added,
+                           hosts_removed, weighted_priority_health, overprovisioning_factor);
+}
+
+void PersistentHostSetImpl::applyMembershipDelta(const HostVector& hosts_added,
+                                                 const HostVector& hosts_removed,
+                                                 std::optional<bool> weighted_priority_health,
+                                                 std::optional<uint32_t> overprovisioning_factor) {
+  ENVOY_BUG(localityWeights() == nullptr,
+            "locality weights are not supported with persistent host partitions");
+  syncPartitions();
+  for (const auto& host : hosts_removed) {
+    partitions_->remove(host);
+  }
+  for (const auto& host : hosts_added) {
+    partitions_->add(host);
+  }
+  publishPartitionsChange(hosts_added, hosts_removed, weighted_priority_health,
+                          overprovisioning_factor);
+}
+
+bool PersistentHostSetImpl::applyHostHealthChange(const HostSharedPtr& host) {
+  syncPartitions();
+  if (!partitions_->reclassify(host)) {
+    return false;
+  }
+  publishPartitionsChange({}, {}, std::nullopt, std::nullopt);
+  return true;
+}
+
+PrioritySet::UpdateHostsParams PersistentHostSetImpl::snapshotUpdateHostsParams(
+    PersistentHostPartitionsSnapshotConstSharedPtr snapshot) {
+  PrioritySet::UpdateHostsParams params = emptyHostsParams();
+  params.persistent_partitions = std::move(snapshot);
+  return params;
+}
+
+PrioritySet::UpdateHostsParams
+PersistentHostSetImpl::flatUpdateHostsParams(const PersistentHostPartitionsSnapshot& snapshot) {
+  const PartitionsSnapshotImpl& impl = asImpl(snapshot);
+  auto hosts = std::make_shared<HostVector>(toHostVector(impl.hosts.all));
+  auto healthy_hosts = std::make_shared<HealthyHostVector>(toHostVector(impl.hosts.healthy));
+  auto degraded_hosts = std::make_shared<DegradedHostVector>(toHostVector(impl.hosts.degraded));
+  auto excluded_hosts = std::make_shared<ExcludedHostVector>(toHostVector(impl.hosts.excluded));
+
+  std::vector<HostVector> all_per_locality;
+  std::vector<HostVector> healthy_per_locality;
+  std::vector<HostVector> degraded_per_locality;
+  std::vector<HostVector> excluded_per_locality;
+  for (const PersistentViews& bucket : impl.localities) {
+    all_per_locality.push_back(toHostVector(bucket.all));
+    healthy_per_locality.push_back(toHostVector(bucket.healthy));
+    degraded_per_locality.push_back(toHostVector(bucket.degraded));
+    excluded_per_locality.push_back(toHostVector(bucket.excluded));
+  }
+  const bool local = impl.has_local_locality;
+  return PrioritySet::UpdateHostsParams{
+      std::move(hosts),
+      std::move(healthy_hosts),
+      std::move(degraded_hosts),
+      std::move(excluded_hosts),
+      std::make_shared<HostsPerLocalityImpl>(std::move(all_per_locality), local),
+      std::make_shared<HostsPerLocalityImpl>(std::move(healthy_per_locality), local),
+      std::make_shared<HostsPerLocalityImpl>(std::move(degraded_per_locality), local),
+      std::make_shared<HostsPerLocalityImpl>(std::move(excluded_per_locality), local),
+      nullptr};
+}
+
+const PrioritySet::UpdateHostsParams& PersistentHostSetImpl::flat() const {
+  if (!flat_built_) {
+    flat_ = flatUpdateHostsParams(*currentSnapshot());
+    flat_built_ = true;
+  }
+  return flat_;
+}
+
+PersistentHostPartitionsSnapshotConstSharedPtr PersistentHostSetImpl::currentSnapshot() const {
+  switch (source_) {
+  case Source::Flat:
+    return nullptr;
+  case Source::Partitions:
+    if (partitions_snapshot_ == nullptr) {
+      partitions_snapshot_ = partitions_->snapshot();
+    }
+    return partitions_snapshot_;
+  case Source::Snapshot:
+    return adopted_snapshot_;
+  }
+  PANIC_DUE_TO_CORRUPT_ENUM;
+}
+
+void PersistentHostSetImpl::syncPartitions() {
+  if (source_ == Source::Partitions) {
+    return;
+  }
+  // flat() is current in both other states, built from the adopted snapshot if necessary.
+  partitions_->seed(flat());
+  source_ = Source::Partitions;
+  adopted_snapshot_ = nullptr;
+  partitions_snapshot_ = nullptr;
+}
+
+void PersistentHostSetImpl::publishPartitionsChange(
+    const HostVector& hosts_added, const HostVector& hosts_removed,
+    std::optional<bool> weighted_priority_health, std::optional<uint32_t> overprovisioning_factor) {
+  source_ = Source::Partitions;
+  partitions_snapshot_ = nullptr;
+  flat_ = emptyHostsParams();
+  flat_built_ = false;
+  PrioritySet::UpdateHostsParams empty = emptyHostsParams();
+  HostSetImpl::updateHosts(std::move(empty), localityWeights(), hosts_added, hosts_removed,
+                           weighted_priority_health, overprovisioning_factor);
 }
 
 bool ClusterInfoImpl::maintenanceMode() const {
@@ -2217,6 +2726,11 @@ void ClusterImplBase::reloadHealthyHosts(const HostSharedPtr& host) {
 void ClusterImplBase::reloadHealthyHostsHelper(const HostSharedPtr& host) {
   const auto& host_sets = prioritySet().hostSetsPerPriority();
 
+  // Persistent partitions move the host in place, so no priority is rebuilt.
+  if (host != nullptr && priority_set_.usePersistentHostPartitions() &&
+      priority_set_.applyHostHealthChange(host->priority(), host)) {
+    return;
+  }
   // A health change re-partitions only the host's priority. A null host is a full reload (startup,
   // overprovisioning change) and re-partitions every priority.
   if (host != nullptr &&

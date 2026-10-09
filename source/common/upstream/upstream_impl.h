@@ -667,6 +667,10 @@ public:
   DegradedHostVectorConstSharedPtr degradedHostsPtr() const override { return degraded_hosts_; }
   const HostVector& excludedHosts() const override { return excluded_hosts_->get(); }
   ExcludedHostVectorConstSharedPtr excludedHostsPtr() const override { return excluded_hosts_; }
+  size_t hostCount() const override { return hosts_->size(); }
+  size_t healthyHostCount() const override { return healthy_hosts_->get().size(); }
+  size_t degradedHostCount() const override { return degraded_hosts_->get().size(); }
+  size_t excludedHostCount() const override { return excluded_hosts_->get().size(); }
   const HostsPerLocality& hostsPerLocality() const override { return *hosts_per_locality_; }
   HostsPerLocalityConstSharedPtr hostsPerLocalityPtr() const override {
     return hosts_per_locality_;
@@ -712,11 +716,11 @@ public:
   static PrioritySet::UpdateHostsParams applyHealthTransition(const HostSet& host_set,
                                                               const HostSharedPtr& host);
 
-  void updateHosts(PrioritySet::UpdateHostsParams&& update_hosts_params,
-                   LocalityWeightsConstSharedPtr locality_weights, const HostVector& hosts_added,
-                   const HostVector& hosts_removed,
-                   std::optional<bool> weighted_priority_health = std::nullopt,
-                   std::optional<uint32_t> overprovisioning_factor = std::nullopt);
+  virtual void updateHosts(PrioritySet::UpdateHostsParams&& update_hosts_params,
+                           LocalityWeightsConstSharedPtr locality_weights,
+                           const HostVector& hosts_added, const HostVector& hosts_removed,
+                           std::optional<bool> weighted_priority_health = std::nullopt,
+                           std::optional<uint32_t> overprovisioning_factor = std::nullopt);
 
 protected:
   virtual void runUpdateCallbacks(const HostVector& hosts_added, const HostVector& hosts_removed) {
@@ -743,6 +747,110 @@ private:
 };
 
 using HostSetImplPtr = std::unique_ptr<HostSetImpl>;
+
+/**
+ * Host set whose partitions are persistent maps patched by membership and health deltas. Flat views
+ * are built on the first read after a change. A full `updateHosts()` replaces the partitions.
+ */
+class PersistentHostSetImpl : public HostSetImpl {
+public:
+  PersistentHostSetImpl(uint32_t priority, std::optional<bool> weighted_priority_health,
+                        std::optional<uint32_t> overprovisioning_factor);
+  ~PersistentHostSetImpl() override;
+
+  // Upstream::HostSet
+  const HostVector& hosts() const override { return *flat().hosts; }
+  HostVectorConstSharedPtr hostsPtr() const override { return flat().hosts; }
+  const HostVector& healthyHosts() const override { return flat().healthy_hosts->get(); }
+  HealthyHostVectorConstSharedPtr healthyHostsPtr() const override { return flat().healthy_hosts; }
+  const HostVector& degradedHosts() const override { return flat().degraded_hosts->get(); }
+  DegradedHostVectorConstSharedPtr degradedHostsPtr() const override {
+    return flat().degraded_hosts;
+  }
+  const HostVector& excludedHosts() const override { return flat().excluded_hosts->get(); }
+  ExcludedHostVectorConstSharedPtr excludedHostsPtr() const override {
+    return flat().excluded_hosts;
+  }
+  const HostsPerLocality& hostsPerLocality() const override { return *flat().hosts_per_locality; }
+  HostsPerLocalityConstSharedPtr hostsPerLocalityPtr() const override {
+    return flat().hosts_per_locality;
+  }
+  const HostsPerLocality& healthyHostsPerLocality() const override {
+    return *flat().healthy_hosts_per_locality;
+  }
+  HostsPerLocalityConstSharedPtr healthyHostsPerLocalityPtr() const override {
+    return flat().healthy_hosts_per_locality;
+  }
+  const HostsPerLocality& degradedHostsPerLocality() const override {
+    return *flat().degraded_hosts_per_locality;
+  }
+  HostsPerLocalityConstSharedPtr degradedHostsPerLocalityPtr() const override {
+    return flat().degraded_hosts_per_locality;
+  }
+  const HostsPerLocality& excludedHostsPerLocality() const override {
+    return *flat().excluded_hosts_per_locality;
+  }
+  HostsPerLocalityConstSharedPtr excludedHostsPerLocalityPtr() const override {
+    return flat().excluded_hosts_per_locality;
+  }
+  size_t hostCount() const override;
+  size_t healthyHostCount() const override;
+  size_t degradedHostCount() const override;
+  size_t excludedHostCount() const override;
+
+  PersistentHostPartitionsSnapshotConstSharedPtr persistentPartitions() const override;
+
+  // Accepts either flat views or a snapshot from another persistent host set (the main-thread copy
+  // of this set, when this one runs on a worker).
+  void updateHosts(PrioritySet::UpdateHostsParams&& update_hosts_params,
+                   LocalityWeightsConstSharedPtr locality_weights, const HostVector& hosts_added,
+                   const HostVector& hosts_removed,
+                   std::optional<bool> weighted_priority_health = std::nullopt,
+                   std::optional<uint32_t> overprovisioning_factor = std::nullopt) override;
+
+  // Adds and removes hosts, placing each added host by its health and locality. Locality weights
+  // are not supported.
+  void applyMembershipDelta(const HostVector& hosts_added, const HostVector& hosts_removed,
+                            std::optional<bool> weighted_priority_health,
+                            std::optional<uint32_t> overprovisioning_factor);
+
+  // Moves `host` between the healthy, degraded and excluded partitions after its health changed.
+  // Returns false if `host` is not in this set.
+  bool applyHostHealthChange(const HostSharedPtr& host);
+
+  // Returns update params that carry only `snapshot`.
+  static PrioritySet::UpdateHostsParams
+  snapshotUpdateHostsParams(PersistentHostPartitionsSnapshotConstSharedPtr snapshot);
+  // Returns the flat views `snapshot` describes, for a host set that keeps flat vectors.
+  static PrioritySet::UpdateHostsParams
+  flatUpdateHostsParams(const PersistentHostPartitionsSnapshot& snapshot);
+
+private:
+  struct Partitions;
+  // Which representation is current.
+  enum class Source { Flat, Partitions, Snapshot };
+
+  // Returns the flat views, building them from the current partitions or snapshot if needed.
+  const PrioritySet::UpdateHostsParams& flat() const;
+  // The snapshot of the current partitions, or nullptr when the flat views are current.
+  PersistentHostPartitionsSnapshotConstSharedPtr currentSnapshot() const;
+  // Makes `partitions_` current so a delta can be applied to it.
+  void syncPartitions();
+  // Marks `partitions_` current, drops the stale flat views, and runs the update callbacks.
+  void publishPartitionsChange(const HostVector& hosts_added, const HostVector& hosts_removed,
+                               std::optional<bool> weighted_priority_health,
+                               std::optional<uint32_t> overprovisioning_factor);
+
+  std::unique_ptr<Partitions> partitions_;
+  // Adopted from another host set; current while `source_` is Snapshot.
+  PersistentHostPartitionsSnapshotConstSharedPtr adopted_snapshot_;
+  // Snapshot of `partitions_`, built on demand while `source_` is Partitions.
+  mutable PersistentHostPartitionsSnapshotConstSharedPtr partitions_snapshot_;
+  // Flat views: the source after a full update, otherwise a cache built on first read.
+  mutable PrioritySet::UpdateHostsParams flat_;
+  mutable bool flat_built_{true};
+  Source source_{Source::Flat};
+};
 
 /**
  * A class for management of the set of hosts in a given cluster.
@@ -782,14 +890,29 @@ public:
     return cross_priority_host_map_;
   }
 
+  // Applies a membership delta to a PersistentHostSetImpl priority and runs the update callbacks.
+  // Only valid on a priority set that creates persistent host sets.
+  virtual void updateHostsByDelta(uint32_t priority, const HostVector& hosts_added,
+                                  const HostVector& hosts_removed,
+                                  std::optional<bool> weighted_priority_health = std::nullopt,
+                                  std::optional<uint32_t> overprovisioning_factor = std::nullopt);
+
+  // Re-partitions `host` in place and runs the update callbacks. Returns false, running nothing, if
+  // the priority is not persistent or does not contain `host`.
+  bool applyHostHealthChange(uint32_t priority, const HostSharedPtr& host);
+
+  // Whether host sets are PersistentHostSetImpl.
+  bool usePersistentHostPartitions() const { return use_persistent_host_partitions_; }
+
 protected:
+  // Switches every host set to PersistentHostSetImpl or back. The existing sets must be empty,
+  // which holds before the first host update.
+  void setPersistentHostSets(bool use_persistent);
+
   // Allows subclasses of PrioritySetImpl to create their own type of HostSetImpl.
   virtual HostSetImplPtr createHostSet(uint32_t priority,
                                        std::optional<bool> weighted_priority_health,
-                                       std::optional<uint32_t> overprovisioning_factor) {
-    return std::make_unique<HostSetImpl>(priority, weighted_priority_health,
-                                         overprovisioning_factor);
-  }
+                                       std::optional<uint32_t> overprovisioning_factor);
 
   virtual void runUpdateCallbacks(const HostVector& hosts_added, const HostVector& hosts_removed) {
     member_update_cb_helper_.runCallbacks(hosts_added, hosts_removed);
@@ -817,6 +940,7 @@ private:
   mutable Common::CallbackManager<void, uint32_t, const HostVector&, const HostVector&>
       priority_update_cb_helper_;
   bool batch_update_ : 1 = false;
+  bool use_persistent_host_partitions_ : 1 = false;
 
   // Helper class to maintain state as we perform multiple host updates. Keeps track of all hosts
   // that have been added/removed throughout the batch update, and ensures that we properly manage
@@ -865,6 +989,16 @@ public:
    * over from the flat map, so this is only honored before any host has been added.
    */
   void usePersistentCrossPriorityHostMap();
+
+  // Uses PersistentHostSetImpl for every priority when `persistent_host_partitions` is enabled.
+  // Call on the main thread before the first host update; locality weights are not supported.
+  void setUsePersistentHostPartitions(bool use_persistent);
+
+  // PrioritySetImpl
+  void updateHostsByDelta(uint32_t priority, const HostVector& hosts_added,
+                          const HostVector& hosts_removed,
+                          std::optional<bool> weighted_priority_health = std::nullopt,
+                          std::optional<uint32_t> overprovisioning_factor = std::nullopt) override;
 
 protected:
   void updateCrossPriorityHostMap(uint32_t priority, const HostVector& hosts_added,

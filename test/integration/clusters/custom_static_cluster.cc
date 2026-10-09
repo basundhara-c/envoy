@@ -11,6 +11,14 @@ namespace Envoy {
 // ClusterImplBase
 void CustomStaticCluster::startPreInit() {
   Upstream::HostVector hosts{host_};
+  if (use_persistent_host_partitions_) {
+    priority_set_.setUsePersistentHostPartitions(true);
+  }
+  if (priority_set_.usePersistentHostPartitions()) {
+    priority_set_.updateHostsByDelta(priority_, hosts, {}, true, std::nullopt);
+    onPreInitComplete();
+    return;
+  }
   auto hosts_ptr = std::make_shared<Upstream::HostVector>(hosts);
 
   priority_set_.updateHosts(
