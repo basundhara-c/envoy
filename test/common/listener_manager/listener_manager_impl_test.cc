@@ -181,6 +181,10 @@ public:
   // picked is observable.
   Network::ConnectionDrainEvent inPlaceUpdateAndCaptureDrainEvent();
 
+  // Performs an in-place update that only adds a filter chain, so the previous listener version
+  // has nothing to drain, and expects its drain timer to be armed with the given duration.
+  void inPlaceUpdateWithNothingToDrain(std::chrono::milliseconds expected_drain_time);
+
   Network::MockListenSocket*
   expectUpdateToThenDrain(const envoy::config::listener::v3::Listener& new_listener_proto,
                           ListenerHandle* old_listener_handle,
@@ -8863,6 +8867,85 @@ filter_chains:
 
   EXPECT_CALL(*listener_foo_update1, onDestroy());
   return captured;
+}
+
+void ListenerManagerImplForInPlaceFilterChainUpdateTest::inPlaceUpdateWithNothingToDrain(
+    std::chrono::milliseconds expected_drain_time) {
+  EXPECT_CALL(*worker_, start(_, _, _));
+  EXPECT_TRUE(manager_->startWorkers(guard_dog_, callback_.AsStdFunction()).ok());
+
+  const std::string listener_foo_yaml = R"EOF(
+name: foo
+traffic_direction: INBOUND
+address:
+  socket_address:
+    address: 127.0.0.1
+    port_value: 1234
+filter_chains:
+- filters: []
+  )EOF";
+
+  ListenerHandle* listener_foo = expectListenerCreate(true, true);
+  EXPECT_CALL(listener_factory_, createListenSocket(_, _, _, default_bind_type, _, 0));
+  EXPECT_CALL(listener_foo->target_, initialize());
+  EXPECT_TRUE(addOrUpdateListener(parseListenerFromV3Yaml(listener_foo_yaml)));
+  EXPECT_CALL(*worker_, addListener(_, _, _, _, _));
+  listener_foo->target_.ready();
+  worker_->callAddCompletion();
+
+  // The update keeps the original filter chain and adds one, so no filter chain drains.
+  const auto listener_foo_update1_proto = parseListenerFromV3Yaml(R"EOF(
+name: foo
+traffic_direction: INBOUND
+address:
+  socket_address:
+    address: 127.0.0.1
+    port_value: 1234
+filter_chains:
+- filters: []
+- filters:
+  filter_chain_match:
+    destination_port: 1234
+  )EOF");
+
+  ListenerHandle* listener_foo_update1 = expectListenerOverridden(true, listener_foo);
+  auto duplicated_socket = new NiceMock<Network::MockListenSocket>();
+  EXPECT_CALL(*listener_factory_.socket_, duplicate())
+      .WillOnce(Return(ByMove(std::unique_ptr<Network::Socket>(duplicated_socket))));
+  EXPECT_CALL(listener_foo_update1->target_, initialize());
+  EXPECT_TRUE(addOrUpdateListener(listener_foo_update1_proto));
+
+  ON_CALL(server_.options_, drainTime()).WillByDefault(Return(std::chrono::seconds(600)));
+  EXPECT_CALL(*worker_, addListener(_, _, _, _, _));
+  Event::MockTimer* filter_chain_drain_timer = new Event::MockTimer(&server_.dispatcher_);
+  EXPECT_CALL(*filter_chain_drain_timer, enableTimer(expected_drain_time, _));
+  listener_foo_update1->target_.ready();
+  worker_->callAddCompletion();
+  EXPECT_EQ(0, server_.stats_store_
+                   .gauge("listener_manager.total_filter_chains_draining",
+                          Stats::Gauge::ImportMode::NeverImport)
+                   .value());
+
+  EXPECT_CALL(*worker_, removeFilterChains(_, _, _));
+  filter_chain_drain_timer->invokeCallback();
+  EXPECT_CALL(*listener_foo, onDestroy());
+  worker_->callDrainFilterChainsComplete();
+
+  EXPECT_CALL(*listener_foo_update1, onDestroy());
+}
+
+// A previous listener version with nothing to drain is released without waiting for the drain
+// time.
+TEST_P(ListenerManagerImplForInPlaceFilterChainUpdateTest, NothingToDrainReleasesAtOnce) {
+  inPlaceUpdateWithNothingToDrain(std::chrono::milliseconds(0));
+}
+
+TEST_P(ListenerManagerImplForInPlaceFilterChainUpdateTest,
+       NothingToDrainWaitsForDrainTimeWhenGuardDisabled) {
+  TestScopedRuntime scoped_runtime;
+  scoped_runtime.mergeValues(
+      {{"envoy.reloadable_features.listener_release_empty_drain_group", "false"}});
+  inPlaceUpdateWithNothingToDrain(std::chrono::milliseconds(600000));
 }
 
 // A draining filter chain is notified with the configured server drain strategy.

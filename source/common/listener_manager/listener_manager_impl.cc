@@ -1302,8 +1302,15 @@ void ListenerManagerImpl::drainGroup(
 
   // Start the drain sequence which completes when the listener's drain manager has completed
   // draining at whatever the server configured drain times are.
+  // A previous listener version with no filter chains or addresses to drain has no connections to
+  // wait for, so it is released on the next loop instead of being held for the drain time.
+  const bool nothing_to_drain =
+      Runtime::runtimeFeatureEnabled(
+          "envoy.reloadable_features.listener_release_empty_drain_group") &&
+      draining_group->numDrainingFilterChains() == 0 && draining_group->numDrainingAddresses() == 0;
   draining_group->startDrainSequence(
-      server_.options().drainTime(), server_.dispatcher(), [this, draining_group]() -> void {
+      nothing_to_drain ? std::chrono::seconds(0) : server_.options().drainTime(),
+      server_.dispatcher(), [this, draining_group]() -> void {
         if (auto listener = draining_group->getDrainingListener(); listener) {
           listener->debugLog(
               absl::StrCat("removing draining filter chains from listener ", listener->name()));
