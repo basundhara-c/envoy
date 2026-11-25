@@ -1316,9 +1316,7 @@ void FcdsSharedFilterChainManager::onFilterChainWarmed(
   scheduleTlsUpdate();
 
   if (draining) {
-    for (auto* handle : state.handles_) {
-      handle->callbacks().drainFilterChain(draining);
-    }
+    drainOncePerListener(state, draining);
   }
   state.warming_filter_chain_ = nullptr;
 }
@@ -1334,7 +1332,17 @@ void FcdsSharedFilterChainManager::onFilterChainRemoved(
 
   scheduleTlsUpdate();
 
+  drainOncePerListener(state, draining);
+}
+
+void FcdsSharedFilterChainManager::drainOncePerListener(
+    SubscriptionState& state, const Network::DrainableFilterChainSharedPtr& draining) {
+  absl::flat_hash_set<uint64_t> drained_keys;
   for (auto* handle : state.handles_) {
+    if (const auto key = handle->callbacks().fcdsDrainKey();
+        key.has_value() && !drained_keys.insert(*key).second) {
+      continue;
+    }
     handle->callbacks().drainFilterChain(draining);
   }
 }

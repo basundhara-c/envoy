@@ -689,6 +689,81 @@ public:
   Init::TargetImpl init_target_{"transport socket", [] {}};
 };
 
+class KeyedFcdsClientCallbacks : public MockFcdsClientCallbacks {
+public:
+  explicit KeyedFcdsClientCallbacks(uint64_t key) : key_(key) {}
+  absl::optional<uint64_t> fcdsDrainKey() const override { return key_; }
+
+private:
+  const uint64_t key_;
+};
+
+// Versions of one in-place updated listener share its tag. A replaced or removed chain drains once
+// per tag, not once per live listener version, so draining chains don't grow with update count.
+TEST_P(FilterChainManagerImplTest, FcdsDrainsOncePerListenerTag) {
+  NiceMock<MockListenerComponentFactory> listener_component_factory;
+  auto fcds_shared_manager = createFcdsSharedManager(listener_component_factory);
+
+  envoy::config::core::v3::ConfigSource config_source;
+  config_source.mutable_api_config_source()->set_api_type(
+      envoy::config::core::v3::ApiConfigSource::GRPC);
+  config_source.mutable_api_config_source()->set_transport_api_version(
+      envoy::config::core::v3::ApiVersion::V3);
+  const std::string name = "dynamic_chain";
+
+  Config::SubscriptionCallbacks* fcds_callbacks = nullptr;
+  auto subscription = std::make_unique<NiceMock<Config::MockSubscription>>();
+  EXPECT_CALL(parent_context_.server_factory_context_.cluster_manager_.subscription_factory_,
+              subscriptionFromConfigSource(_, _, _, _, _, _))
+      .WillOnce(Invoke([&fcds_callbacks, &subscription](
+                           const envoy::config::core::v3::ConfigSource&, absl::string_view,
+                           Stats::Scope&, Config::SubscriptionCallbacks& callbacks,
+                           Config::OpaqueResourceDecoderSharedPtr,
+                           const Config::SubscriptionOptions&) mutable
+                           -> absl::StatusOr<Config::SubscriptionPtr> {
+        fcds_callbacks = &callbacks;
+        return std::move(subscription);
+      }));
+
+  // Three versions of listener 7 and one of listener 8.
+  KeyedFcdsClientCallbacks v1(7), v2(7), v3(7), other(8);
+  std::vector<FcdsSubscriptionHandleSharedPtr> handles;
+  for (FcdsClientCallbacks* cb : std::vector<FcdsClientCallbacks*>{&v1, &v2, &v3, &other}) {
+    auto handle_or = fcds_shared_manager->subscribe(config_source, name, *cb, init_manager_);
+    ASSERT_TRUE(handle_or.ok());
+    handles.push_back(std::move(handle_or).value());
+  }
+  Init::ExpectableWatcherImpl init_watcher;
+  EXPECT_CALL(init_watcher, ready());
+  init_manager_.initialize(init_watcher);
+  ASSERT_NE(fcds_callbacks, nullptr);
+
+  EXPECT_CALL(listener_component_factory, createNetworkFilterFactoryList(_, _))
+      .WillRepeatedly(Invoke([](auto&, auto&) { return Filter::NetworkFilterFactoriesList{}; }));
+  Protobuf::RepeatedPtrField<std::string> removed;
+  envoy::config::listener::v3::FilterChain fc;
+  fc.set_name(name);
+  EXPECT_OK(
+      fcds_callbacks->onConfigUpdate(TestUtility::decodeResources({fc}).refvec_, removed, "v1"));
+  flushFcdsTlsUpdate();
+
+  int listener7_drains = 0;
+  for (auto* cb : {&v1, &v2, &v3}) {
+    EXPECT_CALL(*cb, drainFilterChain(_)).WillRepeatedly(Invoke([&](auto) { ++listener7_drains; }));
+  }
+  EXPECT_CALL(other, drainFilterChain(_)).Times(2);
+
+  // Replace, then remove: each drains the old chain once on listener 7 and once on listener 8.
+  fc.add_filters()->set_name("dummy_filter");
+  EXPECT_OK(
+      fcds_callbacks->onConfigUpdate(TestUtility::decodeResources({fc}).refvec_, removed, "v2"));
+  flushFcdsTlsUpdate();
+  removed.Add(std::string(name));
+  EXPECT_OK(fcds_callbacks->onConfigUpdate({}, removed, "v3"));
+  EXPECT_EQ(listener7_drains, 2);
+  handles.clear();
+}
+
 TEST_P(FilterChainManagerImplTest, FcdsSharedFilterChainManagerBasic) {
   NiceMock<MockListenerComponentFactory> listener_component_factory;
 

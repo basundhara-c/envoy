@@ -485,6 +485,9 @@ class FcdsClientCallbacks {
 public:
   virtual ~FcdsClientCallbacks() = default;
   virtual void drainFilterChain(Network::DrainableFilterChainSharedPtr draining) PURE;
+  // Callbacks that share a key drain a replaced chain once: every version of an in-place updated
+  // listener keeps the listener tag, and one drain covers that tag's connections on all workers.
+  virtual absl::optional<uint64_t> fcdsDrainKey() const { return absl::nullopt; }
 };
 
 // The listener manager that the FcdsSharedFilterChainManager reports its filter chains to.
@@ -610,6 +613,8 @@ private:
   absl::flat_hash_map<std::string, std::unique_ptr<SubscriptionState>> subscriptions_;
 
   void onFilterChainWarmed(Network::DrainableFilterChainSharedPtr filter_chain);
+  void drainOncePerListener(SubscriptionState& state,
+                            const Network::DrainableFilterChainSharedPtr& draining);
   void updateTlsState();
   void scheduleTlsUpdate();
   // Called by the handle of a local caller, whose subscription keeps the state of the name.

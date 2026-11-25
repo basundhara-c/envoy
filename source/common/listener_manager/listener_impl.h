@@ -441,6 +441,7 @@ public:
 
   // FilterChainUpdateCallbacks
   void drainFilterChain(Network::DrainableFilterChainSharedPtr draining) override;
+  absl::optional<uint64_t> fcdsDrainKey() const override { return listenerTag(); }
 
   void ensureSocketOptions(Network::Socket::OptionsSharedPtr& options) {
     if (options == nullptr) {
